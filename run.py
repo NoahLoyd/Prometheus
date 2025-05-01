@@ -1,15 +1,16 @@
+# run.py
+
 from tools.note_tool import NoteTool
-from tools.calculator import calculate
+from tools.file_tool import FileTool
 from tools.internet_tool import fetch_summary
+from tools.calculator import calculate
 from core.agent import PrometheusAgent
 from core.router import CommandRouter
 
 # Initialize agent and tools
 agent = PrometheusAgent()
-note_tool = NoteTool()
-agent.tool_manager.register_tool("notepad", note_tool)
-agent.tool_manager.register_tool("calculator", calculate)
-agent.tool_manager.register_tool("internet", fetch_summary)
+agent.tool_manager.register_tool("notepad", NoteTool())
+agent.tool_manager.register_tool("file", FileTool())
 
 # Initialize router
 router = CommandRouter(agent)
@@ -34,10 +35,10 @@ print("\nCommand: List tools")
 print("Response:", router.interpret("List tools"))
 
 print("\nCommand: Write to file saying Hello World to notes.txt")
-print("Response:", router.interpret("Write to file notes.txt saying Hello World"))
+print("Response:", router.interpret("Write to file saying Hello World to notes.txt"))
 
 print("\nCommand: Read file notes.txt")
 print("Response:", router.interpret("Read file notes.txt"))
 
 print("\nCommand: List all files")
-print("Response:", router.interpret("List files"))
+print("Response:", router.interpret("List all files"))
