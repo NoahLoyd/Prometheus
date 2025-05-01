@@ -70,7 +70,6 @@ class CommandRouter:
             content = command[saying_index:command.lower().index("to")].strip()
         except Exception:
             content = "No content provided."
-
     elif "read" in command:
         action = "read"
         try:
@@ -78,7 +77,6 @@ class CommandRouter:
             filename = parts[file_index + 1]
         except Exception:
             filename = "default.txt"
-
     elif "list" in command:
         action = "list"
 
