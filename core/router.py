@@ -54,35 +54,48 @@ class CommandRouter:
                 return word
         return ""
 
-    def _parse_file_command(self, command):
-        parts = command.lower().split()
-        action = "read"
-        filename = "default.txt"
-        content = ""
+import re
 
-        if "write" in command:
-            action = "write"
-            try:
-                to_index = parts.index("to")
-                filename = parts[to_index + 1]
-                saying_index = command.lower().index("saying") + len("saying ")
-                content = command[saying_index:command.lower().index("to")].strip()
-            except Exception:
-                content = "No content provided."
+def _parse_file_command(self, command):
+    command = command.lower()
+    action = "read"
+    filename = "default.txt"
+    content = ""
 
-        elif "read" in command:
-            action = "read"
-            try:
-                file_index = parts.index("file")
-                filename = parts[file_index + 1]
-            except Exception:
+    if "write" in command:
+        action = "write"
+        try:
+            # Extract filename with pattern: to <filename>
+            match = re.search(r"to ([\w\-.]+\.txt)", command)
+            if match:
+                filename = match.group(1)
+            else:
                 filename = "default.txt"
 
-        elif "list" in command:
-            action = "list"
+            # Extract content with pattern: saying <content>
+            content_match = re.search(r"saying (.+?) to", command)
+            if content_match:
+                content = content_match.group(1).strip()
+            else:
+                content = "No content provided."
 
-        return {
-            "action": action,
-            "filename": filename,
-            "content": content
-        }
+        except Exception as e:
+            content = f"Error parsing content: {str(e)}"
+
+    elif "read" in command:
+        action = "read"
+        try:
+            match = re.search(r"file ([\w\-.]+\.txt)", command)
+            if match:
+                filename = match.group(1)
+        except:
+            filename = "default.txt"
+
+    elif "list" in command:
+        action = "list"
+
+    return {
+        "action": action,
+        "filename": filename,
+        "content": content
+    }
