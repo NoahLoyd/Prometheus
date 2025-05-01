@@ -18,7 +18,8 @@ if __name__ == "__main__":
         "What do you remember?",
         "Clear memory",
         "What do you remember?",
-        "Do something unexpected"
+        "Do something unexpected",
+        "what can you do?"
     ]
 
     for cmd in commands:
