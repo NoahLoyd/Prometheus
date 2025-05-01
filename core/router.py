@@ -18,6 +18,9 @@ class CommandRouter:
             url = self._extract_url(command)
             return self.agent.act("internet", url)
 
+        elif "file" in command:
+            return self.agent.act("file", **self._parse_file_command(command))
+
         elif "note" in command or "write down" in command:
             return self.agent.act("notepad")
 
@@ -50,4 +53,30 @@ class CommandRouter:
             if word.startswith("http"):
                 return word
         return ""
-           
+
+    def _parse_file_command(self, command):
+        parts = command.lower().split()
+        action = "read"
+        filename = "default.txt"
+        content = ""
+
+        if "write" in command:
+            action = "write"
+            try:
+                filename = parts[parts.index("to") + 1]
+                content_index = command.lower().index("saying") + len("saying ")
+                content = command[content_index:]
+            except:
+                content = "No content provided."
+
+        elif "read" in command:
+            action = "read"
+            try:
+                filename = parts[parts.index("file") + 1]
+            except:
+                filename = "default.txt"
+
+        elif "list" in command:
+            action = "list"
+
+        return {"action": action, "filename": filename, "content": content}
