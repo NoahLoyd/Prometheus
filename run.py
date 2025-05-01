@@ -1,28 +1,31 @@
-from core.agent import PrometheusAgent
-from core.router import CommandRouter
 from tools.note_tool import NoteTool
+from tools.calculator import calculate
+from tools.internet_tool import fetch_summary
+from core.agent import PrometheusAgent
+from core.router import Router
 
 if __name__ == "__main__":
     agent = PrometheusAgent()
+    router = Router(agent)
+
+    # Tool instances
     note_tool = NoteTool()
-    agent.register_tool("notepad", note_tool)
 
-    router = CommandRouter(agent)
+    # Register tools (functions, not classes)
+    agent.register_tool("calculator", calculate)
+    agent.register_tool("internet", fetch_summary)
+    agent.register_tool("notepad", note_tool.add_note)
+    agent.register_tool("list_notes", note_tool.list_notes)
 
-    # Natural language commands to test
-    commands = [
-        "Calculate 100 - 44",
-        "Summarize https://example.com",
-        "Write down a note",
-        "Remember that Prometheus is my AI",
-        "What do you remember?",
-        "What can you do?",
-        "What should I do to research GPUs?",
-        "Forget everything",
-        "What do you remember?",
-        "Analyze the best way to learn Python"
-    ]
+    # Test cases
+    print("Command: Calculate 100 - 44")
+    print("Response:", router.interpret("Calculate 100 - 44"))
 
-    for cmd in commands:
-        print(f"\nCommand: {cmd}")
-        print("Response:", router.interpret(cmd))
+    print("\nCommand: Summarize https://example.com")
+    print("Response:", router.interpret("Summarize https://example.com"))
+
+    print("\nCommand: Write down a note")
+    print("Response:", router.interpret("Write down a note"))
+
+    print("\nCommand: List notes")
+    print("Response:", router.interpret("List notes"))
