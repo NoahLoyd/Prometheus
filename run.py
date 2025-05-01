@@ -32,3 +32,12 @@ print("Response:", router.interpret("What do you remember?"))
 
 print("\nCommand: List tools")
 print("Response:", router.interpret("List tools"))
+
+print("\nCommand: Write to file saying Hello World to notes.txt")
+print("Response:", router.interpret("Write to file notes.txt saying Hello World"))
+
+print("\nCommand: Read file notes.txt")
+print("Response:", router.interpret("Read file notes.txt"))
+
+print("\nCommand: List all files")
+print("Response:", router.interpret("List files"))
