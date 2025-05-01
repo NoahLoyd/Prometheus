@@ -20,7 +20,7 @@ class CommandRouter:
             return self.agent.act("internet", url)
 
         elif "file" in command:
-            return self.agent.act("file", *self.parse_file_command(command))
+            return self.agent.act("file", **self._parse_file_command(command))
 
         elif "note" in command or "write down" in command:
             return self.agent.act("notepad")
@@ -55,12 +55,10 @@ class CommandRouter:
                 return word
         return ""
 
-    def parse_file_command(self, command):
+    def _parse_file_command(self, command):
         action = "read"
         filename = "default.txt"
         content = ""
-
-        command = command.lower()
 
         if "write" in command:
             action = "write"
@@ -68,8 +66,6 @@ class CommandRouter:
                 match = re.search(r"to ([\w\-\.]+\.txt)", command)
                 if match:
                     filename = match.group(1)
-                else:
-                    filename = "default.txt"
 
                 content_match = re.search(r"saying (.+?) to", command)
                 if content_match:
