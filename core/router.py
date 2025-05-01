@@ -18,8 +18,20 @@ class CommandRouter:
         elif "note" in command or "write down" in command:
             return self.agent.act("notepad")
 
+        elif command.startswith("remember"):
+            info = command.replace("remember", "").strip()
+            self.agent.memory.add(info)
+            return f"Remembered: {info}"
+
+        elif "what do you remember" in command or "recall memory" in command:
+            return self.agent.recall()
+
+        elif "clear memory" in command or "forget everything" in command:
+            self.agent.memory.clear()
+            return "Memory cleared."
+
         else:
-            return "I didn't understand that command."
+            return "I didn't understand that command. Try 'calculate', 'summarize', 'note', or 'remember'."
 
     def _extract_url(self, text):
         words = text.split()
