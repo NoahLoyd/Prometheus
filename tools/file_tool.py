@@ -1,31 +1,23 @@
-       # tools/file_tool.py
-
+# tools/file_tool.py
 import os
 
 class FileTool:
-    def read(self, filename):
-        if not os.path.exists(filename):
-            return f"File '{filename}' not found."
-        with open(filename, "r") as f:
-            return f.read()
-
-    def write(self, filename, content):
-        with open(filename, "w") as f:
-            f.write(content)
-        return f"Content written to '{filename}'."
-
-    def list_files(self, directory="."):
-        try:
-            return os.listdir(directory)
-        except Exception as e:
-            return str(e)
-
-    def __call__(self, action="list", filename="", content=""):
-        if action == "read":
-            return self.read(filename)
-        elif action == "write":
-            return self.write(filename, content)
+    def __call__(self, action="read", filename="default.txt", content=""):
+        if action == "write":
+            with open(filename, "w") as f:
+                f.write(content)
+            return f"Content written to '{filename}'."
+        
+        elif action == "read":
+            try:
+                with open(filename, "r") as f:
+                    return f.read()
+            except FileNotFoundError:
+                return f"File '{filename}' not found."
+        
         elif action == "list":
-            return self.list_files(filename or ".")
+            files = [f for f in os.listdir() if os.path.isfile(f)]
+            return f"Files: {', '.join(files)}"
+        
         else:
-            return "Unknown file action."
+            return f"Unknown action: {action}"
