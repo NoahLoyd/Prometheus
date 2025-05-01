@@ -1,7 +1,5 @@
 from tools.note_tool import NoteTool
-
 from core.agent import PrometheusAgent
-from tools.note_tool import NoteTool
 
 if __name__ == "__main__":
     agent = PrometheusAgent()
@@ -17,4 +15,3 @@ if __name__ == "__main__":
     print("\nUsing notepad tool:")
     print(agent.act("notepad"))
     print("Saved notes:", note_tool.list_notes())
-
