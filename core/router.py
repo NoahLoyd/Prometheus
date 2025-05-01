@@ -1,8 +1,11 @@
-# core/router.py
+   # core/router.py
+
+from core.reasoning import ReasoningEngine
 
 class CommandRouter:
     def __init__(self, agent):
         self.agent = agent
+        self.reasoning = ReasoningEngine(agent)
 
     def interpret(self, command):
         command = command.lower().strip()
@@ -32,7 +35,11 @@ class CommandRouter:
 
         elif "what can you do" in command or "list tools" in command or "available tools" in command:
             return f"Available tools: {', '.join(self.agent.tools.list_tools())}"
-        
+
+        elif "analyze" in command or "what should i do" in command:
+            goal = command.replace("analyze", "").replace("what should i do", "").strip()
+            return self.reasoning.analyze_goal(goal)
+
         else:
             return "I didn't understand that command. Try 'calculate', 'summarize', 'note', or 'remember'."
 
@@ -42,5 +49,4 @@ class CommandRouter:
             if word.startswith("http"):
                 return word
         return ""
-
            
