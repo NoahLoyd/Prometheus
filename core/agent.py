@@ -1,3 +1,4 @@
+from tools.file_tool import FileTool
 from tools.internet_tool import fetch_summary
 from memory.short_term import ShortTermMemory
 from tools.tool_manager import ToolManager
@@ -13,7 +14,8 @@ class PrometheusAgent:
     def _register_default_tools(self):
         self.tool_manager.register_tool("calculator", calculate)
         self.tool_manager.register_tool("internet", fetch_summary)
-
+        self.tool_manager.register_tool("file", FileTool())
+    
     def register_tool(self, name, tool_func):
         self.tool_manager.register_tool(name, tool_func)
 
