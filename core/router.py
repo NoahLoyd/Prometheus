@@ -1,5 +1,6 @@
 # core/router.py
 
+import re
 from core.reasoning import ReasoningEngine
 
 class CommandRouter:
@@ -19,7 +20,7 @@ class CommandRouter:
             return self.agent.act("internet", url)
 
         elif "file" in command:
-            return self.agent.act("file", **self._parse_file_command(command))
+            return self.agent.act("file", *self.parse_file_command(command))
 
         elif "note" in command or "write down" in command:
             return self.agent.act("notepad")
@@ -54,48 +55,44 @@ class CommandRouter:
                 return word
         return ""
 
-import re
+    def parse_file_command(self, command):
+        action = "read"
+        filename = "default.txt"
+        content = ""
 
-def _parse_file_command(self, command):
-    command = command.lower()
-    action = "read"
-    filename = "default.txt"
-    content = ""
+        command = command.lower()
 
-    if "write" in command:
-        action = "write"
-        try:
-            # Extract filename with pattern: to <filename>
-            match = re.search(r"to ([\w\-.]+\.txt)", command)
-            if match:
-                filename = match.group(1)
-            else:
+        if "write" in command:
+            action = "write"
+            try:
+                match = re.search(r"to ([\w\-\.]+\.txt)", command)
+                if match:
+                    filename = match.group(1)
+                else:
+                    filename = "default.txt"
+
+                content_match = re.search(r"saying (.+?) to", command)
+                if content_match:
+                    content = content_match.group(1).strip()
+                else:
+                    content = "No content provided."
+            except Exception as e:
+                content = f"Error parsing content: {str(e)}"
+
+        elif "read" in command:
+            action = "read"
+            try:
+                match = re.search(r"file ([\w\-\.]+\.txt)", command)
+                if match:
+                    filename = match.group(1)
+            except:
                 filename = "default.txt"
 
-            # Extract content with pattern: saying <content>
-            content_match = re.search(r"saying (.+?) to", command)
-            if content_match:
-                content = content_match.group(1).strip()
-            else:
-                content = "No content provided."
+        elif "list" in command:
+            action = "list"
 
-        except Exception as e:
-            content = f"Error parsing content: {str(e)}"
-
-    elif "read" in command:
-        action = "read"
-        try:
-            match = re.search(r"file ([\w\-.]+\.txt)", command)
-            if match:
-                filename = match.group(1)
-        except:
-            filename = "default.txt"
-
-    elif "list" in command:
-        action = "list"
-
-    return {
-        "action": action,
-        "filename": filename,
-        "content": content
-    }
+        return {
+            "action": action,
+            "filename": filename,
+            "content": content
+        }
