@@ -30,6 +30,9 @@ class CommandRouter:
             self.agent.memory.clear()
             return "Memory cleared."
 
+        elif "what can you do" in command or "list tools" in command or "available tools" in command:
+    return f"Available tools: {', '.join(self.agent.tools.list_tools())}"
+        
         else:
             return "I didn't understand that command. Try 'calculate', 'summarize', 'note', or 'remember'."
 
@@ -39,3 +42,5 @@ class CommandRouter:
             if word.startswith("http"):
                 return word
         return ""
+
+           
