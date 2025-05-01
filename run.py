@@ -1,4 +1,6 @@
 from tools.note_tool import NoteTool
+from tools.calculator import calculate
+from tools.internet_tool import fetch_summary
 from core.agent import PrometheusAgent
 from core.router import CommandRouter
 
@@ -6,6 +8,8 @@ from core.router import CommandRouter
 agent = PrometheusAgent()
 note_tool = NoteTool()
 agent.tool_manager.register_tool("notepad", note_tool)
+agent.tool_manager.register_tool("calculator", calculate)
+agent.tool_manager.register_tool("internet", fetch_summary)
 
 # Initialize router
 router = CommandRouter(agent)
