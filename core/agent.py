@@ -13,7 +13,10 @@ class PrometheusAgent:
     def _register_default_tools(self):
         self.tool_manager.register_tool("calculator", calculate)
         self.tool_manager.register_tool("internet", fetch_summary)
-    
+
+    def register_tool(self, name, tool_func):
+        self.tool_manager.register_tool(name, tool_func)
+
     def think(self, input_text):
         self.memory.add(input_text)
         return f"{self.name} is thinking about: {input_text}"
@@ -23,4 +26,3 @@ class PrometheusAgent:
 
     def act(self, tool_name, *args, **kwargs):
         return self.tool_manager.use_tool(tool_name, *args, **kwargs)
-
