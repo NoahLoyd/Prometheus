@@ -14,3 +14,6 @@ class ToolManager:
 
     def list_tools(self):
         return list(self.tools.keys())
+
+    def list_tools(self):
+        return list(self.tools.keys())
