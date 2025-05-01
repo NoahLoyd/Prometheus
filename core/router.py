@@ -1,4 +1,4 @@
-   # core/router.py
+# core/router.py
 
 from core.reasoning import ReasoningEngine
 
@@ -34,7 +34,8 @@ class CommandRouter:
             return "Memory cleared."
 
         elif "what can you do" in command or "list tools" in command or "available tools" in command:
-            return f"Available tools: {', '.join(self.agent.tools.list_tools())}"
+            tool_names = list(self.agent.tool_manager.tools.keys())
+            return f"Available tools: {', '.join(tool_names)}"
 
         elif "analyze" in command or "what should i do" in command:
             goal = command.replace("analyze", "").replace("what should i do", "").strip()
