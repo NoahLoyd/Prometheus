@@ -18,8 +18,9 @@ class CommandRouter:
             url = self._extract_url(command)
             return self.agent.act("internet", url)
 
-        elif "file" in command:
-            return self.agent.act("file", **self._parse_file_command(command))
+        elif "file" in command or "read" in command or "write" in command or "list" in command:
+            parsed = self._parse_file_command(command)
+            return self.agent.act("file", **parsed)
 
         elif "note" in command or "write down" in command:
             return self.agent.act("notepad")
@@ -55,33 +56,40 @@ class CommandRouter:
         return ""
 
     def _parse_file_command(self, command):
-    parts = command.lower().split()
-    action = "read"
-    filename = "default.txt"
-    content = ""
-
-    if "write" in command:
-        action = "write"
-        try:
-            # Look for the word after "to" as filename
-            to_index = parts.index("to")
-            filename = parts[to_index + 1]
-            saying_index = command.lower().index("saying") + len("saying ")
-            content = command[saying_index:command.lower().index("to")].strip()
-        except Exception:
-            content = "No content provided."
-    elif "read" in command:
+        # Default values
         action = "read"
-        try:
-            file_index = parts.index("file")
-            filename = parts[file_index + 1]
-        except Exception:
-            filename = "default.txt"
-    elif "list" in command:
-        action = "list"
+        filename = "default.txt"
+        content = ""
 
-    return {
-        "action": action,
-        "filename": filename,
-        "content": content
-    }
+        if "write" in command:
+            action = "write"
+            try:
+                # Extract filename
+                if "to" in command:
+                    to_index = command.split().index("to")
+                    filename = command.split()[to_index + 1]
+
+                # Extract content
+                if "saying" in command:
+                    saying_index = command.lower().index("saying") + len("saying ")
+                    content = command[saying_index:].split(" to")[0].strip()
+            except Exception:
+                content = "No content provided."
+
+        elif "read" in command:
+            action = "read"
+            try:
+                if "file" in command:
+                    file_index = command.split().index("file")
+                    filename = command.split()[file_index + 1]
+            except Exception:
+                filename = "default.txt"
+
+        elif "list" in command:
+            action = "list"
+
+        return {
+            "action": action,
+            "filename": filename,
+            "content": content
+        }
