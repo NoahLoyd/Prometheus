@@ -1,17 +1,24 @@
-from tools.note_tool import NoteTool
 from core.agent import PrometheusAgent
+from core.router import CommandRouter
+from tools.note_tool import NoteTool
 
 if __name__ == "__main__":
     agent = PrometheusAgent()
     note_tool = NoteTool()
     agent.register_tool("notepad", note_tool)
 
-    print(agent.think("What is 10 * 3?"))
-    print(agent.act("calculator", "10 * 3"))
+    router = CommandRouter(agent)
+
+    # Sample natural commands
+    commands = [
+        "Calculate 25 * 4",
+        "Summarize https://example.com",
+        "Write down a note"
+    ]
+
+    for cmd in commands:
+        print(f"\nCommand: {cmd}")
+        print("Response:", router.interpret(cmd))
 
     print("\nMemory contents:")
     print(agent.recall())
-
-    print("\nUsing notepad tool:")
-    print(agent.act("notepad"))
-    print("Saved notes:", note_tool.list_notes())
