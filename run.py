@@ -9,17 +9,18 @@ if __name__ == "__main__":
 
     router = CommandRouter(agent)
 
-    # Test a range of natural language commands
+    # Natural language commands to test
     commands = [
-        "Calculate 64 / 8",
+        "Calculate 100 - 44",
         "Summarize https://example.com",
         "Write down a note",
-        "Remember that my GPU is a 3090",
+        "Remember that Prometheus is my AI",
         "What do you remember?",
-        "Clear memory",
+        "What can you do?",
+        "What should I do to research GPUs?",
+        "Forget everything",
         "What do you remember?",
-        "Do something unexpected",
-        "what can you do?"
+        "Analyze the best way to learn Python"
     ]
 
     for cmd in commands:
