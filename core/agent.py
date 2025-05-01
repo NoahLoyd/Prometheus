@@ -1,3 +1,4 @@
+from tools.internet_tool import fetch_summary
 from memory.short_term import ShortTermMemory
 from tools.tool_manager import ToolManager
 from tools.calculator import calculate
@@ -11,7 +12,8 @@ class PrometheusAgent:
 
     def _register_default_tools(self):
         self.tool_manager.register_tool("calculator", calculate)
-
+        self.tool_manager.register_tool("internet", fetch_summary)
+    
     def think(self, input_text):
         self.memory.add(input_text)
         return f"{self.name} is thinking about: {input_text}"
