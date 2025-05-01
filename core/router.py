@@ -55,28 +55,35 @@ class CommandRouter:
         return ""
 
     def _parse_file_command(self, command):
-        parts = command.lower().split()
+    parts = command.lower().split()
+    action = "read"
+    filename = "default.txt"
+    content = ""
+
+    if "write" in command:
+        action = "write"
+        try:
+            # Look for the word after "to" as filename
+            to_index = parts.index("to")
+            filename = parts[to_index + 1]
+            saying_index = command.lower().index("saying") + len("saying ")
+            content = command[saying_index:command.lower().index("to")].strip()
+        except Exception:
+            content = "No content provided."
+
+    elif "read" in command:
         action = "read"
-        filename = "default.txt"
-        content = ""
+        try:
+            file_index = parts.index("file")
+            filename = parts[file_index + 1]
+        except Exception:
+            filename = "default.txt"
 
-        if "write" in command:
-            action = "write"
-            try:
-                filename = parts[parts.index("to") + 1]
-                content_index = command.lower().index("saying") + len("saying ")
-                content = command[content_index:]
-            except:
-                content = "No content provided."
+    elif "list" in command:
+        action = "list"
 
-        elif "read" in command:
-            action = "read"
-            try:
-                filename = parts[parts.index("file") + 1]
-            except:
-                filename = "default.txt"
-
-        elif "list" in command:
-            action = "list"
-
-        return {"action": action, "filename": filename, "content": content}
+    return {
+        "action": action,
+        "filename": filename,
+        "content": content
+    }
