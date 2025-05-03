@@ -1,6 +1,6 @@
 from tools.file_tool import FileTool
 from tools.internet_tool import InternetSearchTool
-from tools.calculator_tool import CalculatorTool
+from tools.calculator import CalculatorTool
 from tools.note_tool import NoteTool
 from tools.summarizer_tool import SummarizerTool
 from tools.tool_manager import ToolManager
