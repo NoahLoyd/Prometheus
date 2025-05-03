@@ -3,7 +3,7 @@ from tools.calculator import CalculatorTool
 from tools.note_tool import NoteTool
 from tools.file_tool import FileTool
 from tools.summarizer_tool import SummarizerTool
-from tools.internet_tool import InternetSearchTool
+from tools.internet_tool import InternetTool  # <-- FIXED: correct class name
 
 # Initialize tools
 tools = [
@@ -11,7 +11,7 @@ tools = [
     NoteTool(),
     FileTool(),
     SummarizerTool(),
-    InternetSearchTool(),  # <-- Internet tool is now registered
+    InternetTool(),  # <-- FIXED: correct tool class
 ]
 
 # Initialize Prometheus AI
