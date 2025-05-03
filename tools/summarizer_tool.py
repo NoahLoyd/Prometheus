@@ -1,6 +1,7 @@
 # summarize_web_tool.py
 from tools.base_tool import BaseTool
-from tools.internet_tool import tool as internet_tool
+from tools.internet_tool import InternetSearchTool
+internet_tool = InternetSearchTool()
 
 class SummarizeWebTool(BaseTool):
     def run(self, input_text):
