@@ -1,28 +1,28 @@
+
 import os
 import requests
 from tools.base_tool import BaseTool
 
 class InternetSearchTool(BaseTool):
     def __init__(self):
-        super().__init__("internet_search", "Search the web using SerpAPI")
+        super().__init__(name="internet_search", description="Searches the internet using SerpAPI.")
 
-    def use(self, query: str) -> str:
+    def run(self, query: str) -> str:
         api_key = os.getenv("SERPAPI_API_KEY")
         if not api_key:
-            return "Error: SERPAPI_API_KEY is not set. Please set it using os.environ or a .env file."
+            return "Error: SERPAPI_API_KEY not found in environment variables."
 
         params = {
-            "engine": "google",
             "q": query,
             "api_key": api_key,
-            "num": 5,
+            "engine": "google"
         }
 
         try:
             response = requests.get("https://serpapi.com/search", params=params)
             response.raise_for_status()
         except requests.RequestException as e:
-            return f"Error: Failed to fetch results — {str(e)}"
+            return f"Error: Failed to fetch results – {str(e)}"
 
         data = response.json()
         results = data.get("organic_results", [])
@@ -31,4 +31,4 @@ class InternetSearchTool(BaseTool):
 
         return "\n\n".join([f"{r.get('title')}\n{r.get('link')}" for r in results])
 
-         tool = InternetSearchTool()
+tool = InternetSearchTool()
