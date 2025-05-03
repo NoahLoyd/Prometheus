@@ -1,31 +1,26 @@
 from core.agent import PrometheusAgent
-from tools.calculator import calculator_tool
-from tools.notepad import note_tool
-from tools.file_tool import file_tool
-from tools.summarizer import summarizer_tool
-from tools.memory_tool import memory_tool
-from tools.internet_tool import internet_tool
-from router import CommandRouter
+from tools.calculator import CalculatorTool
+from tools.note_tool import NoteTool
+from tools.file_tool import FileTool
+from tools.summarizer_tool import SummarizerTool
+from tools.internet_tool import InternetSearchTool
 
-# Initialize the agent
-agent = PrometheusAgent()
+# Initialize tools
+tools = [
+    CalculatorTool(),
+    NoteTool(),
+    FileTool(),
+    SummarizerTool(),
+    InternetSearchTool(),  # <-- Internet tool is now registered
+]
 
-# Register tools
-agent.tool_manager.register_tool("calculator", calculator_tool)
-agent.tool_manager.register_tool("notepad", note_tool)
-agent.tool_manager.register_tool("file", file_tool)
-agent.tool_manager.register_tool("summarizer", summarizer_tool)
-agent.tool_manager.register_tool("memory", memory_tool)
-agent.tool_manager.register_tool("internet", internet_tool)
+# Initialize Prometheus AI
+agent = PrometheusAgent(tools=tools)
 
-# Initialize router
-router = CommandRouter(agent)
+# === OPTIONAL: Set SerpAPI key directly in Colab ===
+import os
+os.environ["SERPAPI_API_KEY"] = "5f4c682efd58236a55d6a7de3fe8a792d933125c8157047a26e0e9c2a9cd5e37"
 
-# === TEST PROMETHEUS TOOLS ===
-print(router.route("Calculate 2 + 2"))
-print(router.route("Write to file saying Hello World to test file tool"))
-print(router.route("Read from file output.txt"))
-print(router.route("Remember: Prometheus is starting fresh"))
-print(router.route("Recall memory"))
-print(router.route("Summarize: This is a long paragraph meant to test summarization. It should return a concise version."))
-print(router.route("Search internet for OpenAI news"))
+# === Run a test prompt ===
+response = agent.run("Search the web for the latest updates on GPT-5.")
+print(response)
