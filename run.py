@@ -1,4 +1,4 @@
-from core.prometheus_agent import PrometheusAgent
+from core.agent import PrometheusAgent
 from tools.calculator import calculator_tool
 from tools.notepad import note_tool
 from tools.file_tool import file_tool
