@@ -1,31 +1,38 @@
 import os
-from serpapi import GoogleSearch
+import requests
+from tools.base_tool import BaseTool
 
-class SearchTool:
+class InternetSearchTool(BaseTool):
     def __init__(self):
-        self.api_key = "5f4c682efd58236a55d6a7de3fe8a792d933125c8157047a26e0e9c2a9cd5e37"
+        super().__init__("internet_search", "Search the web using SerpAPI.")
+        self.api_key = os.getenv("SERPAPI_API_KEY")  # You can override this in Colab if needed
 
-    def run(self, query):
+    def run(self, query: str) -> str:
+        if not self.api_key:
+            return "SerpAPI key not found. Please set SERPAPI_API_KEY."
+
+        print(f"[InternetSearchTool] Searching: {query}")
+        url = "https://serpapi.com/search"
         params = {
-            "engine": "google",
             "q": query,
-            "api_key": self.api_key
+            "api_key": self.api_key,
+            "engine": "google",
+            "num": 5
         }
 
-        search = GoogleSearch(params)
-        results = search.get_dict()
+        response = requests.get(url, params=params)
+        if response.status_code != 200:
+            return f"Search failed: {response.text}"
 
-        if "error" in results:
-            return f"Search failed: {results['error']}"
+        results = response.json().get("organic_results", [])
+        if not results:
+            return "No search results found."
 
-        if "organic_results" not in results:
-            return "No results found."
-
-        output = []
-        for result in results["organic_results"][:5]:
-            title = result.get("title", "No title")
-            link = result.get("link", "No link")
+        output = ""
+        for i, result in enumerate(results, 1):
+            title = result.get("title")
+            link = result.get("link")
             snippet = result.get("snippet", "")
-            output.append(f"Title: {title}\nLink: {link}\nSnippet: {snippet}\n")
+            output += f"{i}. {title}\n{snippet}\n{link}\n\n"
 
-        return "\n".join(output)
+        return output.strip()
