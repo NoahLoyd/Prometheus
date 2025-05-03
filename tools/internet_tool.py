@@ -1,9 +1,8 @@
-
 import os
 import requests
 from tools.base_tool import BaseTool
 
-class InternetSearchTool(BaseTool):
+class InternetTool(BaseTool):
     def __init__(self):
         super().__init__(name="internet_search", description="Searches the internet using SerpAPI.")
 
@@ -31,4 +30,4 @@ class InternetSearchTool(BaseTool):
 
         return "\n\n".join([f"{r.get('title')}\n{r.get('link')}" for r in results])
 
-tool = InternetSearchTool()
+tool = InternetTool()
