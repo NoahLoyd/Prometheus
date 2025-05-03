@@ -30,3 +30,5 @@ class InternetSearchTool(BaseTool):
             return "No search results found."
 
         return "\n\n".join([f"{r.get('title')}\n{r.get('link')}" for r in results])
+
+         tool = InternetSearchTool()
