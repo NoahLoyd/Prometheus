@@ -1,3 +1,6 @@
+
+# core/agent.py
+
 from tools.calculator import CalculatorTool
 from tools.file_tool import FileTool
 from tools.internet_tool import InternetTool
@@ -16,12 +19,12 @@ class PrometheusAgent:
         note_tool = NoteTool()
         summarizer_tool = SummarizerTool()
 
-        # Register tools with their main function
-        self.tool_manager.register_tool(calculator_tool, calculator_tool.calculate)
-        self.tool_manager.register_tool(file_tool, file_tool.handle)
-        self.tool_manager.register_tool(internet_tool, internet_tool.search)
-        self.tool_manager.register_tool(note_tool, note_tool.save_note)
-        self.tool_manager.register_tool(summarizer_tool, summarizer_tool.summarize)
+        # Register tools using their `.run()` method
+        self.tool_manager.register_tool(calculator_tool, calculator_tool.run)
+        self.tool_manager.register_tool(file_tool, file_tool.run)
+        self.tool_manager.register_tool(internet_tool, internet_tool.run)
+        self.tool_manager.register_tool(note_tool, note_tool.run)
+        self.tool_manager.register_tool(summarizer_tool, summarizer_tool.run)
 
         # Optional: support passing in additional tools
         if tools:
