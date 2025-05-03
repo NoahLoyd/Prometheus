@@ -1,17 +1,17 @@
 from base_tool import BaseTool
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core import PrometheusAgent
 
 class SummarizerTool(BaseTool):
     def __init__(self):
-        super().__init__(name="summarizer", description="Summarize a long text into a shorter version with key points.")
+        super().__init__(name="summarizer", description="Summarize long text using the LLM.")
 
-    def use(self, input_text: str) -> str:
+    def use(self, input_text: str, agent: "PrometheusAgent" = None) -> str:
         if not input_text.strip():
             return "Please provide some text to summarize."
 
-        # Simulated summarization for now — replace with real LLM logic if needed
-        import textwrap
-        summary = (
-            "Summary:\n"
-            + "\n".join(textwrap.wrap(input_text.strip()[:500], width=80))  # Trims & wraps
-        )
-        return summary
+        prompt = f"Summarize the following text clearly and concisely:\n\n{input_text}"
+        response = agent.llm.generate(prompt)
+        return response
