@@ -1,16 +1,19 @@
-# tools/tool_manager.py
+from tools.calculator import CalculatorTool
+from tools.notepad import NotepadTool
+from tools.file_tool import FileTool
+# from tools.internet_tool import InternetSearchTool  # Enable after Step 3
 
 class ToolManager:
     def __init__(self):
-        self.tools = {}
+        self.tools = {
+            "calculator": CalculatorTool(),
+            "notepad": NotepadTool(),
+            "file": FileTool(),
+            # "internet": InternetSearchTool(),  # Enable after building it
+        }
 
-    def register_tool(self, name, tool_func):
-        self.tools[name] = tool_func
-
-    def use_tool(self, name, *args, **kwargs):
-        if name not in self.tools:
-            return f"Tool '{name}' not found."
-        return self.tools[name](*args, **kwargs)
+    def get_tool(self, name):
+        return self.tools.get(name)
 
     def list_tools(self):
         return list(self.tools.keys())
