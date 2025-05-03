@@ -1,33 +1,32 @@
-# /tools/internet_tool.py
-
-from tools.base_tool import BaseTool
-import requests
 import os
+import requests
+from tools.base_tool import BaseTool
 
 class InternetSearchTool(BaseTool):
     def __init__(self):
         super().__init__("internet_search", "Search the web using SerpAPI")
 
-    def run(self, query):
+    def use(self, query: str) -> str:
         api_key = os.getenv("SERPAPI_API_KEY")
         if not api_key:
-            return "SerpAPI key not found. Please set the SERPAPI_API_KEY environment variable."
+            return "Error: SERPAPI_API_KEY is not set. Please set it using os.environ or a .env file."
 
-        url = "https://serpapi.com/search"
         params = {
+            "engine": "google",
             "q": query,
             "api_key": api_key,
-            "engine": "google"
+            "num": 5,
         }
-        response = requests.get(url, params=params)
-        if response.status_code == 200:
-            data = response.json()
-            if "organic_results" in data and data["organic_results"]:
-                return data["organic_results"][0].get("snippet", "No snippet found.")
-            else:
-                return "No results found."
-        else:
-            return f"Request failed with status code {response.status_code}"
 
-# This line must be present for Prometheus to register the tool
-tool = InternetSearchTool()
+        try:
+            response = requests.get("https://serpapi.com/search", params=params)
+            response.raise_for_status()
+        except requests.RequestException as e:
+            return f"Error: Failed to fetch results — {str(e)}"
+
+        data = response.json()
+        results = data.get("organic_results", [])
+        if not results:
+            return "No search results found."
+
+        return "\n\n".join([f"{r.get('title')}\n{r.get('link')}" for r in results])
