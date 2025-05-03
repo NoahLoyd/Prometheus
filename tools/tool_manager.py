@@ -1,40 +1,29 @@
 # tool_manager.py
-
-import os
-import importlib.util
+from tools.calculator import tool as CalculatorTool
+from tools.file_tool import tool as FileTool
+from tools.notepad import tool as NoteTool
+from tools.internet_tool import tool as InternetTool
+from tools.search_tool import tool as SearchTool
+from tools.summarizer_tool import tool as SummarizerTool  # <- make sure this file exists
+from tools.summarize_web_tool import tool as SummarizeWebTool  # <- new web summary tool
 
 class ToolManager:
-    def __init__(self, tools_folder="tools"):
-        self.tools_folder = tools_folder
-        self.tools = {}
-        self.load_tools()
-
-    def load_tools(self):
-        self.tools.clear()
-        for filename in os.listdir(self.tools_folder):
-            if filename.endswith(".py") and not filename.startswith("__"):
-                tool_name = filename[:-3]
-                path = os.path.join(self.tools_folder, filename)
-                spec = importlib.util.spec_from_file_location(tool_name, path)
-                module = importlib.util.module_from_spec(spec)
-                try:
-                    spec.loader.exec_module(module)
-                    if hasattr(module, "tool"):
-                        self.tools[tool_name] = module.tool
-                except Exception as e:
-                    print(f"Error loading tool {tool_name}: {e}")
+    def __init__(self):
+        self.tools = [
+            CalculatorTool(),
+            FileTool(),
+            NoteTool(),
+            InternetTool(),
+            SearchTool(),
+            SummarizerTool(),
+            SummarizeWebTool(),  # <- newly added
+        ]
 
     def get_tool(self, name):
-        return self.tools.get(name)
+        for tool in self.tools:
+            if tool.name == name:
+                return tool
+        return None
 
     def list_tools(self):
-        return list(self.tools.keys())
-
-    def call_tool(self, name, input_text):
-        tool = self.get_tool(name)
-        if not tool:
-            return f"Tool '{name}' not found."
-        try:
-            return tool.run(input_text)
-        except Exception as e:
-            return f"Error running tool '{name}': {e}"
+        return [tool.name for tool in self.tools]
