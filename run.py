@@ -1,3 +1,5 @@
+# run.py
+
 from core.agent import PrometheusAgent
 from tools.calculator import CalculatorTool
 from tools.note_tool import NoteTool
@@ -14,15 +16,18 @@ tools = [
     NoteTool(),
     FileTool(),
     SummarizerTool(),
-    InternetTool()
+    InternetTool(),
 ]
 
-# Initialize Prometheus agent
+# Initialize agent
 agent = PrometheusAgent(tools=tools)
 
-# === Test each tool ===
-print(agent.run("calculator: 2 + 2"))
-print(agent.run("note: save: Remember to invest in GPUs"))
-print(agent.run("note: list"))
-print(agent.run("file: list"))
-print(agent.run("internet: Search the web for the latest updates on GPT-5"))
+# === Run Tests ===
+print("Calculator:", agent.run("calculator: 2 + 2"))
+print("Note Save:", agent.run("note: save: Remember to invest in GPUs"))
+print("Note List:", agent.run("note: list"))
+print("File Write:", agent.run("file: write:test.txt|This is a test file."))
+print("File Read:", agent.run("file: read:test.txt"))
+print("File List:", agent.run("file: list"))
+print("Summarizer:", agent.run("summarize: Artificial intelligence is a rapidly evolving field that..."))
+print("Internet:", agent.run("internet: GPT-5 latest news"))
