@@ -5,28 +5,24 @@ class ToolManager:
         self.tools = {}
 
     def register_tool(self, name, func):
-        """Register a tool with a specific name."""
-        self.tools[name.lower()] = func  # name should be string
+        """Register a tool with its handler function."""
+        self.tools[name.lower()] = func
 
     def list_tools(self):
-        """List all registered tool names."""
         return list(self.tools.keys())
 
     def call_tool(self, name, *args, **kwargs):
-        """Call a registered tool by name with given arguments."""
-        name = name.lower()
-        if name in self.tools:
-            return self.tools[name](*args, **kwargs)
-        else:
-            return f"Tool '{name}' not found."
+        if name.lower() in self.tools:
+            return self.tools[name.lower()](*args, **kwargs)
+        return f"Tool '{name}' not found."
 
     def run_tool(self, command):
-        """Try running the command through all tools."""
-        for name, tool_func in self.tools.items():
-            try:
-                result = tool_func(command)
-                if result:
-                    return result
-            except Exception:
-                pass
-        return "No tool was able to process the command."
+        """Parse and run tool using 'tool_name: input' format."""
+        if ":" not in command:
+            return "Invalid command format. Use 'tool_name: input'"
+
+        tool_name, query = command.split(":", 1)
+        tool_name = tool_name.strip().lower()
+        query = query.strip()
+
+        return self.call_tool(tool_name, query)
