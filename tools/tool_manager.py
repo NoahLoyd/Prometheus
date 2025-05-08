@@ -4,9 +4,10 @@ class ToolManager:
     def __init__(self):
         self.tools = {}
 
-    def register_tool(self, name, func):
-        """Register a tool using a name and a callable function."""
-        self.tools[name.lower()] = func
+    def register_tool(self, tool, func):
+        """Register a tool using its class name as the key."""
+        name = tool.__class__.__name__.lower()
+        self.tools[name] = func
 
     def list_tools(self):
         """List all registered tool names."""
@@ -30,4 +31,3 @@ class ToolManager:
             except Exception:
                 pass
         return "No tool was able to process the command."
-
