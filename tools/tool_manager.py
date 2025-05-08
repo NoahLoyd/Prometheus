@@ -4,10 +4,9 @@ class ToolManager:
     def __init__(self):
         self.tools = {}
 
-    def register_tool(self, tool, func):
-        """Register a tool using its class name as the key."""
-        name = tool.__class__.__name__.lower()
-        self.tools[name] = func
+    def register_tool(self, name, func):
+        """Register a tool with a specific name."""
+        self.tools[name.lower()] = func  # name should be string
 
     def list_tools(self):
         """List all registered tool names."""
