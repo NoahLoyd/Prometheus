@@ -1,23 +1,27 @@
-# brain.py
-from goal_planning import GoalPlanning
-from execution import Execution
-from evaluation import Evaluation
-from logging import Logging
+from typing import Dict
+from core.goal_planning import GoalPlanning
+from core.logging import Logging
+
 
 class StrategicBrain:
     """
-    The core orchestrator of Promethyn, responsible for goal planning, execution, evaluation, and logging.
+    StrategicBrain orchestrates long-term goal planning and execution.
     """
-    def __init__(self, tool_manager, memory, llm):
-        """
-        Initialize StrategicBrain with injected dependencies.
 
-        Parameters:
-        - tool_manager: Manages tools for execution.
-        - memory: Handles short- and long-term memory.
-        - llm: A LocalLLM instance for generating plans.
+    def __init__(self, memory: Logging, llm_config: Dict[str, Dict]) -> None:
         """
-        self.goal_planning = GoalPlanning(llm, memory)
-        self.execution = Execution(tool_manager, memory)
-        self.evaluation = Evaluation(memory)
-        self.logging = Logging(memory)
+        Initialize StrategicBrain with memory and LLM configuration.
+
+        :param memory: A Logging instance for memory/context access
+        :param llm_config: Configuration dictionary for LLM models
+        """
+        self.memory = memory
+        self.planner = GoalPlanning(memory, llm_config)
+
+    def think(self, goal: str) -> None:
+        """
+        Use the planner to set a goal and generate a plan.
+
+        :param goal: The goal to achieve
+        """
+        self.planner.set_goal(goal)
