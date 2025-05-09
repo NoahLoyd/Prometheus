@@ -11,21 +11,24 @@ class StrategicBrain:
     and logs all activity to memory.
     """
 
-    def __init__(self, tool_manager, memory):
+    def __init__(self, tool_manager, short_term_memory, long_term_memory):
         self.tool_manager = tool_manager
-        self.memory = memory
+        self.short_term_memory = short_term_memory
+        self.long_term_memory = long_term_memory
         self.goal = None
         self.plan = []
 
     def log(self, key, value):
         timestamp = datetime.now().isoformat()
-        self.memory.save(f"{timestamp}::{key}", value)
+        log_entry = f"{timestamp}::{key}"
+        self.short_term_memory.save(log_entry, value)
+        self.long_term_memory.log_event(key, value)
 
     def set_goal(self, goal):
         self.goal = goal
         self.plan = self.plan_goal(goal)
-        self.memory.save("current_goal", goal)
-        self.memory.save("current_plan", self.plan)
+        self.short_term_memory.save("current_goal", goal)
+        self.short_term_memory.save("current_plan", self.plan)
         self.log("goal_set", goal)
 
     def plan_goal(self, goal):
@@ -33,7 +36,7 @@ class StrategicBrain:
         steps = []
 
         if "money" in goal or "$" in goal:
-            steps.append(("calculator", "1000 / 30"))
+            steps.append(("calculator", "Calculate how to reach $1000 in 30 days"))
             steps.append(("internet", "Search: best ways to make money online 2025"))
             steps.append(("summarizer", "Summarize top 3 money-making strategies"))
             steps.append(("note", f"save: Strategy plan for goal: {goal}"))
@@ -62,7 +65,8 @@ class StrategicBrain:
         try:
             result = self.tool_manager.call_tool(tool_name, query)
             self.log(f"{tool_name}_success", query)
-            self.memory.save(f"{tool_name}_result", result)
+            self.short_term_memory.save(f"{tool_name}_result", result)
+            self.long_term_memory.log_tool_usage(tool_name)
             return {"success": True, "result": result}
         except Exception as e:
             error_message = str(e)
@@ -82,7 +86,7 @@ class StrategicBrain:
                 "query": query,
                 **result
             })
-            self.memory.save(f"step_{i}_result", result)
+            self.short_term_memory.save(f"step_{i}_result", result)
             time.sleep(1)
 
         return results
@@ -114,7 +118,7 @@ class StrategicBrain:
                 "query": step["query"],
                 "score": score
             })
-        self.memory.save("ranked_steps", ranked)
+        self.short_term_memory.save("ranked_steps", ranked)
         return ranked
 
     def evaluate_results(self, step_results):
@@ -128,7 +132,8 @@ class StrategicBrain:
                 for step in step_results if not step["success"]
             ]
         }
-        self.memory.save("evaluation_summary", structured_summary)
+        self.short_term_memory.save("evaluation_summary", structured_summary)
+        self.long_term_memory.add_insight("evaluation_summary", structured_summary)
         self.log("evaluation", structured_summary)
         return structured_summary
 
@@ -140,7 +145,8 @@ class StrategicBrain:
             "summary": self.evaluate_results(final["results"]),
             "ranked_steps": final["step_scores"]
         }
-        self.memory.save(f"history::{entry['timestamp']}", entry)
+        self.short_term_memory.save(f"history::{entry['timestamp']}", entry)
+        self.long_term_memory.add_goal_history(entry)
 
     def achieve_goal(self):
         if not self.goal or not self.plan:
@@ -163,7 +169,7 @@ class StrategicBrain:
             "success": all(r["success"] for r in step_results),
             "step_scores": ranked
         }
-        self.memory.save("goal_result", final)
+        self.short_term_memory.save("goal_result", final)
         self.archive_goal_history(final)
         self.log("goal_complete", final["success"])
         return final
