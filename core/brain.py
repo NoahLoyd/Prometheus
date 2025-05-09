@@ -132,12 +132,15 @@ class StrategicBrain:
 
         if failed_steps:
             new_steps = self.retry_or_replan(failed_steps)
-            retry_results = self.execute_plan(new_steps)
+            retry_results = self.execute_plan()
             step_results.extend(retry_results)
 
-        self.memory.save("goal_result", step_results)
-        return {
+        final_results = {
             "goal": self.goal,
             "results": step_results,
+            "failures": failed_steps,
             "success": all(step["success"] for step in step_results),
         }
+
+        self.memory.save("goal_result", final_results)
+        return final_results
