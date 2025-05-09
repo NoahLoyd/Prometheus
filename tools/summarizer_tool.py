@@ -7,4 +7,7 @@ class SummarizerTool(BaseTool):
         super().__init__(name="summarizer", description="Summarizes long text into a short version.")
 
     def run(self, query: str) -> str:
-        return shorten(query, width=100, placeholder="...")
+        try:
+            return shorten(query, width=100, placeholder="...")
+        except Exception as e:
+            return f"Error in summarization: {e}"
