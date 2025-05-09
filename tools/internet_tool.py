@@ -27,3 +27,4 @@ class InternetTool(BaseTool):
             return "\n\n".join(f"{r['title']}\n{r['link']}" for r in results[:3])
         except Exception as e:
             return f"Search failed: {e}"
+            
