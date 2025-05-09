@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import MagicMock, patch
 from tools.tool_manager import ToolManager  # Replace with your actual ToolManager class
 from core.brain import StrategicBrain
 from core.memory import Memory  # Replace with your actual Memory implementation
@@ -36,94 +37,134 @@ class TestStrategicBrain(unittest.TestCase):
             memory=self.memory
         )
 
-    def test_set_and_achieve_goal(self):
+    def test_step_logging_with_timestamp(self):
         """
-        Test if StrategicBrain successfully sets and achieves a goal.
+        Verify that StrategicBrain logs each step with a timestamp and stores it in memory.
         """
-        # Define a sample goal
         goal = "make $100 this week"
-
-        # Step 1: Set the goal
         self.brain.set_goal(goal)
 
-        # Assert that the goal has been set correctly in the brain
-        self.assertEqual(self.brain.goal, goal, "The goal should be set correctly.")
+        # Mock the tool execution to simulate steps
+        mock_steps = [
+            ("TaskRabbit", "Sign up for TaskRabbit", True),
+            ("eBay", "Sell unused items", True),
+            ("Fiverr", "Offer freelance services", False),
+        ]
+        self.brain.plan = [step[:2] for step in mock_steps]  # Set the plan manually for this test
 
-        # Step 2: Achieve the goal
-        output = self.brain.achieve_goal()
+        # Mock memory to track log calls
+        self.memory.log_event = MagicMock()
 
-        # Extract results from the output dictionary
-        results = output.get("results", [])
-        reflection = output.get("reflection", {})
+        # Simulate achieving the goal
+        self.brain.achieve_goal()
 
-        # Assert that results are returned and contain actionable steps
-        self.assertIsNotNone(results, "Results should not be None.")
-        self.assertGreater(len(results), 0, "Results should contain at least one actionable step.")
+        # Verify that each step was logged with a timestamp
+        for step in mock_steps:
+            tool_name, query, success = step
+            self.memory.log_event.assert_any_call(
+                "step_execution",
+                {
+                    "tool_name": tool_name,
+                    "query": query,
+                    "success": success,
+                    "timestamp": unittest.mock.ANY,  # Ensure the timestamp is present
+                }
+            )
 
-        # Validate each result in results
-        for result in results:
-            self.assertIn("tool_name", result, "Each result must have a 'tool_name'.")
-            self.assertIn("query", result, "Each result must have a 'query'.")
-            self.assertIn("success", result, "Each result must have a 'success' flag.")
-            self.assertIsInstance(result["success"], bool, "'success' must be a boolean.")
-
-        # Print the plan and results for visual inspection
-        print(f"\nPlan for goal '{goal}':")
-        for step in self.brain.plan:  # Assuming self.brain.plan is a list of steps
-            print(f"- {step}")
-
-        print("\nResults of achieving the goal:")
-        for result in results:
-            print(f"- Tool: {result['tool_name']}, Query: {result['query']}, Success: {result['success']}")
-
-        # Validate and print reflection if it exists
-        if reflection:
-            success_ratio = reflection.get("success_ratio")
-            failure_ratio = reflection.get("failure_ratio")
-
-            print("\nReflection:")
-            print(f"- Success Ratio: {success_ratio}")
-            print(f"- Failure Ratio: {failure_ratio}")
-
-            self.assertIsInstance(success_ratio, float, "Success ratio must be a float.")
-            self.assertIsInstance(failure_ratio, float, "Failure ratio must be a float.")
-            self.assertGreaterEqual(success_ratio, 0.0, "Success ratio must be >= 0.")
-            self.assertLessEqual(success_ratio, 1.0, "Success ratio must be <= 1.")
-            self.assertGreaterEqual(failure_ratio, 0.0, "Failure ratio must be >= 0.")
-            self.assertLessEqual(failure_ratio, 1.0, "Failure ratio must be <= 1.")
-
-    def test_fallback_behavior(self):
+    def test_daily_summary_generation(self):
         """
-        Test fallback behavior when all models fail.
+        Check if daily summary generation works based on mock memory state.
         """
-        # Mock a failing goal
+        # Mock memory state
+        self.memory.get_daily_logs = MagicMock(return_value=[
+            {"goal": "make $100 this week", "steps": 3, "success": 2, "failure": 1},
+            {"goal": "clean the house", "steps": 5, "success": 5, "failure": 0},
+        ])
+
+        # Simulate daily summary generation
+        summary = self.brain.generate_daily_summary()
+
+        # Verify the summary format and content
+        self.assertIn("make $100 this week", summary)
+        self.assertIn("clean the house", summary)
+        self.assertIn("Steps completed: 3 (Success: 2, Failure: 1)", summary)
+        self.assertIn("Steps completed: 5 (Success: 5, Failure: 0)", summary)
+
+        # Print the summary for visual inspection
+        print("\nDaily Summary:")
+        print(summary)
+
+    @patch("tools.tool_manager.ToolManager.execute_tool")
+    def test_tool_execution_behavior(self, mock_execute_tool):
+        """
+        Add mocks or stubs for tool execution to simulate different tools returning results, failing, or timing out.
+        """
+        goal = "make $100 this week"
+        self.brain.set_goal(goal)
+
+        # Mock tool execution behavior
+        mock_execute_tool.side_effect = [
+            {"tool_name": "TaskRabbit", "query": "Sign up for TaskRabbit", "success": True},
+            {"tool_name": "eBay", "query": "Sell unused items", "success": False},  # Simulate failure
+            TimeoutError("Fiverr tool timed out"),  # Simulate timeout
+        ]
+
+        # Simulate achieving the goal
+        with self.assertLogs("core.brain", level="ERROR") as cm:
+            self.brain.achieve_goal()
+
+        # Verify tool execution behavior
+        mock_execute_tool.assert_called()  # Ensure tools were called
+        self.assertIn("TaskRabbit", mock_execute_tool.call_args_list[0][0][0]["tool_name"])
+        self.assertIn("eBay", mock_execute_tool.call_args_list[1][0][0]["tool_name"])
+
+        # Verify timeout error handling
+        self.assertTrue(any("Fiverr tool timed out" in log for log in cm.output))
+
+    def test_fallback_behavior_on_failure(self):
+        """
+        Ensure the system calls fallback_strategy.refine_plan() only when all model results fail.
+        """
         goal = "an impossible task"
-
-        # Set the goal
         self.brain.set_goal(goal)
 
-        # Mock the achieve_goal behavior to simulate all models failing
-        def mock_achieve_goal():
-            return {
-                "results": [],
-                "reflection": None,
-                "insights": [],
-                "comparison": "Fallback triggered."
-            }
+        # Mock the fallback strategy
+        self.brain.fallback_strategy.refine_plan = MagicMock(return_value=[
+            ("FallbackTool", "Fallback plan step 1")
+        ])
 
-        # Replace the achieve_goal method with the mock
-        self.brain.achieve_goal = mock_achieve_goal
+        # Simulate all models failing
+        self.brain.llm_router.generate_plan = MagicMock(return_value=[])
 
-        # Step 2: Achieve the goal (should trigger fallback)
+        # Achieve the goal (should trigger fallback behavior)
         output = self.brain.achieve_goal()
 
-        # Assert fallback behavior
-        self.assertEqual(output["results"], [], "Results should be empty when fallback is triggered.")
-        self.assertIn("Fallback triggered", output["comparison"], "Fallback behavior should be indicated in comparison.")
+        # Verify fallback strategy was called
+        self.brain.fallback_strategy.refine_plan.assert_called_once_with(goal, None, None)
 
-        # Print fallback output for visual inspection
-        print(f"\nFallback behavior for goal '{goal}':")
-        print("- Comparison:", output["comparison"])
+        # Verify the fallback plan was used
+        self.assertIn("FallbackTool", [step[0] for step in self.brain.plan])
+
+    def test_logging_for_errors_and_insights(self):
+        """
+        Use assertLogs or memory log inspection to confirm specific logging behavior for errors and insights.
+        """
+        goal = "make $100 this week"
+        self.brain.set_goal(goal)
+
+        # Mock logging in memory
+        self.memory.log_event = MagicMock()
+
+        # Mock a failure scenario
+        self.brain.llm_router.generate_plan = MagicMock(return_value=[])
+        self.brain.fallback_strategy.refine_plan = MagicMock(return_value=[])
+
+        # Simulate achieving the goal
+        self.brain.achieve_goal()
+
+        # Verify that error and insight logs were recorded
+        self.memory.log_event.assert_any_call("error", unittest.mock.ANY)
+        self.memory.log_event.assert_any_call("insight", unittest.mock.ANY)
 
 
 if __name__ == "__main__":
