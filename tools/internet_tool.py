@@ -12,12 +12,7 @@ class InternetTool(BaseTool):
         if not api_key:
             return "Error: SERPAPI_API_KEY not set."
 
-        params = {
-            "q": query,
-            "api_key": api_key,
-            "engine": "google"
-        }
-
+        params = {"q": query, "api_key": api_key, "engine": "google"}
         try:
             response = requests.get("https://serpapi.com/search", params=params)
             response.raise_for_status()
