@@ -11,3 +11,4 @@ class SummarizerTool(BaseTool):
             return shorten(query, width=100, placeholder="...")
         except Exception as e:
             return f"Error in summarization: {e}"
+            
