@@ -31,3 +31,4 @@ class FileTool(BaseTool):
             return f"File '{filename}' written successfully."
         except Exception as e:
             return f"Error writing to file: {e}"
+            
