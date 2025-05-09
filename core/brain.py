@@ -1,42 +1,58 @@
-# core/brain.py
-
 import time
 from datetime import datetime
+import re
 
 
 class StrategicBrain:
-    """
-    Strategic reasoning engine for Promethyn.
-    Accepts high-level goals, creates plans, executes them, retries if needed,
-    and logs all activity to memory.
-    """
-
     def __init__(self, tool_manager, short_term_memory, long_term_memory):
         self.tool_manager = tool_manager
         self.short_term_memory = short_term_memory
         self.long_term_memory = long_term_memory
         self.goal = None
         self.plan = []
+        self.tags = []
 
     def log(self, key, value):
         timestamp = datetime.now().isoformat()
-        log_entry = f"{timestamp}::{key}"
-        self.short_term_memory.save(log_entry, value)
+        self.short_term_memory.save(f"{timestamp}::{key}", value)
         self.long_term_memory.log_event(key, value)
+
+    def extract_tags(self, goal):
+        # Use regex or NLP for better tag extraction
+        words = re.findall(r'\w+', goal.lower())
+        tags = set()
+        if "money" in words or "$" in words:
+            tags.add("money")
+        if "learn" in words:
+            tags.add("learning")
+        if "audience" in words or "followers" in words:
+            tags.add("audience")
+        if "fitness" in words or "health" in words:
+            tags.add("fitness")
+        return list(tags) if tags else ["general"]
+
+    def memory_aware_plan(self, goal):
+        tags = self.extract_tags(goal)
+        previous_goals = []
+        for tag in tags:
+            previous_goals.extend(self.long_term_memory.summarize_goals_by_tag(tag))
+        self.tags = tags
+        return previous_goals
 
     def set_goal(self, goal):
         self.goal = goal
+        self.memory_aware_plan(goal)
         self.plan = self.plan_goal(goal)
         self.short_term_memory.save("current_goal", goal)
         self.short_term_memory.save("current_plan", self.plan)
-        self.log("goal_set", goal)
+        self.log("goal_set", {"goal": goal, "tags": self.tags})
 
     def plan_goal(self, goal):
         goal = goal.lower()
         steps = []
 
         if "money" in goal or "$" in goal:
-            steps.append(("calculator", "Calculate how to reach $1000 in 30 days"))
+            steps.append(("calculator", "1000 / 30"))
             steps.append(("internet", "Search: best ways to make money online 2025"))
             steps.append(("summarizer", "Summarize top 3 money-making strategies"))
             steps.append(("note", f"save: Strategy plan for goal: {goal}"))
@@ -76,7 +92,6 @@ class StrategicBrain:
     def execute_plan(self):
         if not self.plan:
             raise ValueError("No plan set. Use set_goal() first.")
-
         results = []
         for i, (tool_name, query) in enumerate(self.plan):
             self.log("step_started", f"{tool_name}: {query}")
@@ -88,31 +103,28 @@ class StrategicBrain:
             })
             self.short_term_memory.save(f"step_{i}_result", result)
             time.sleep(1)
-
         return results
 
     def retry_or_replan(self, failed_steps):
         new_steps = []
+        tool_failures = {}
         for step in failed_steps:
             tool = step["tool_name"]
             query = step["query"]
-
-            if "retry" not in query.lower():
-                new_query = f"Retry: {query}"
-                tool = step["tool_name"]
+            tool_failures[tool] = tool_failures.get(tool, 0) + 1
+            if tool_failures[tool] > 2:  # Switch tools after 2 failures
+                tool = "note"  # Example of switching to a different tool
+                new_query = f"Alternative strategy for: {query}"
             else:
-                new_query = f"Log failure for {query}"
-                tool = "note"
-
+                new_query = f"Retry: {query}"
             self.log("replan", {"tool": tool, "query": new_query})
             new_steps.append((tool, new_query))
-
         return new_steps
 
     def rank_steps(self, results):
         ranked = []
         for step in results:
-            score = 2 if step["success"] else -1  # Factor in positive and negative impacts
+            score = 2 if step["success"] else -1
             ranked.append({
                 "tool": step["tool_name"],
                 "query": step["query"],
@@ -122,20 +134,43 @@ class StrategicBrain:
         return ranked
 
     def evaluate_results(self, step_results):
-        structured_summary = {
+        structured = {
             "successful_steps": [
-                {"tool": step["tool_name"], "query": step["query"], "result": step["result"]}
-                for step in step_results if step["success"]
+                {"tool": s["tool_name"], "query": s["query"], "result": s["result"]}
+                for s in step_results if s["success"]
             ],
             "failed_steps": [
-                {"tool": step["tool_name"], "query": step["query"], "error": step["error"]}
-                for step in step_results if not step["success"]
+                {"tool": s["tool_name"], "query": s["query"], "error": s["error"]}
+                for s in step_results if not s["success"]
             ]
         }
-        self.short_term_memory.save("evaluation_summary", structured_summary)
-        self.long_term_memory.add_insight("evaluation_summary", structured_summary)
-        self.log("evaluation", structured_summary)
-        return structured_summary
+        self.short_term_memory.save("evaluation_summary", structured)
+        self.long_term_memory.add_insight("evaluation_summary", structured)
+        self.log("evaluation", structured)
+
+        scores = {}
+        for s in structured["successful_steps"]:
+            scores[s["tool"]] = scores.get(s["tool"], 0) + 1
+        best_tool = max(scores, key=scores.get, default=None)
+        if best_tool:
+            self.long_term_memory.add_insight("most_effective_tool", best_tool)
+
+        error_reasons = {}
+        for s in structured["failed_steps"]:
+            reason = "syntax/tool mismatch" if "syntax" in s["error"].lower() else "other"
+            error_reasons[reason] = error_reasons.get(reason, 0) + 1
+        self.long_term_memory.add_insight("failure_reasons", error_reasons)
+
+        return structured
+
+    def generate_goal_summary(self, goal_result):
+        summary = {
+            "goal": goal_result["goal"],
+            "tags": self.tags,
+            "success": goal_result["success"],
+            "details": goal_result["results"]
+        }
+        return summary
 
     def archive_goal_history(self, final):
         entry = {
@@ -143,7 +178,8 @@ class StrategicBrain:
             "success": final["success"],
             "timestamp": datetime.now().isoformat(),
             "summary": self.evaluate_results(final["results"]),
-            "ranked_steps": final["step_scores"]
+            "ranked_steps": final["step_scores"],
+            "tags": self.tags
         }
         self.short_term_memory.save(f"history::{entry['timestamp']}", entry)
         self.long_term_memory.add_goal_history(entry)
@@ -151,16 +187,13 @@ class StrategicBrain:
     def achieve_goal(self):
         if not self.goal or not self.plan:
             raise ValueError("Goal and plan must be set before execution.")
-
         step_results = self.execute_plan()
         failed = [s for s in step_results if not s["success"]]
-
         if failed:
             retries = self.retry_or_replan(failed)
             self.plan = retries
             retry_results = self.execute_plan()
             step_results.extend(retry_results)
-
         ranked = self.rank_steps(step_results)
         final = {
             "goal": self.goal,
