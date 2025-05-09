@@ -1,26 +1,31 @@
-# Test script to verify ToolManager
-from tools.tool_manager import ToolManager
+# tools/tool_manager.py
 
-class MockTool:
+class ToolManager:
     """
-    A mock tool for testing purposes.
+    A class to manage and run tools using the 'tool_name: input' format.
     """
-    def __init__(self, name):
-        self.name = name
 
-    def run(self, query):
-        return f"{self.name} executed with query: {query}"
+    def __init__(self):
+        self.tools = {}
 
-# Initialize ToolManager
-tool_manager = ToolManager()
+    def register_tool(self, tool_name, tool_instance):
+        self.tools[tool_name.lower()] = tool_instance
 
-# Register mock tools
-tool_manager.register_tool("mock1", MockTool("MockTool1"))
-tool_manager.register_tool("mock2", MockTool("MockTool2"))
+    def call_tool(self, tool_name, query):
+        tool = self.tools.get(tool_name.lower())
+        if not tool:
+            return f"Error: Tool '{tool_name}' not found."
+        if not hasattr(tool, "run"):
+            return f"Error: Tool '{tool_name}' does not have a 'run' method."
+        return tool.run(query)
 
-# Run the mock tools
-print(tool_manager.run_tool("mock1: Test query 1"))  # Output: MockTool1 executed with query: Test query 1
-print(tool_manager.run_tool("mock2: Test query 2"))  # Output: MockTool2 executed with query: Test query 2
+    def run_tool(self, command):
+        if ":" not in command:
+            return "Invalid command format. Use 'tool_name: input'."
 
-# Test invalid tool
-print(tool_manager.run_tool("mock3: Test query 3"))  # Output: Error: Tool 'mock3' not found.
+        parts = command.split(":", 1)
+        if len(parts) != 2:
+            return "Command must follow the format 'tool_name: input'."
+
+        tool_name, query = parts
+        return self.call_tool(tool_name.strip(), query.strip())
