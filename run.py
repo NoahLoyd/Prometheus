@@ -39,7 +39,7 @@ def run_tests():
     print(agent.run("file: list"))
 
     print("\nSummarizer Tool:")
-    print(agent.run("summarize: Prometheus is a modular AI framework that aims to surpass GPT-4 by integrating reasoning, memory, and tool usage."))
+    print(agent.run("summarizer: Prometheus is a modular AI framework that aims to surpass GPT-4 by integrating reasoning, memory, and tool usage."))
 
     print("\nInternet Tool:")
     print(agent.run("internet: latest news on GPT-5"))
