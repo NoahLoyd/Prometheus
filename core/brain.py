@@ -1,3 +1,4 @@
+import csv
 import time
 from datetime import datetime
 import re
@@ -18,7 +19,6 @@ class StrategicBrain:
         self.long_term_memory.log_event(key, value)
 
     def extract_tags(self, goal):
-        # Use regex or NLP for better tag extraction
         words = re.findall(r'\w+', goal.lower())
         tags = set()
         if "money" in words or "$" in words:
@@ -70,7 +70,7 @@ class StrategicBrain:
         if "fitness" in goal or "health" in goal:
             steps.append(("internet", f"Search: best fitness plans for {goal}"))
             steps.append(("summarizer", "Summarize effective fitness strategies"))
-            steps.append(("note", f"save: Fitness plan for {goal}"))
+            steps.append(("note", f"save: Fitness plan for goal: {goal}"))
 
         if not steps:
             steps.append(("note", f"save: Custom plan requested: {goal}"))
@@ -163,14 +163,36 @@ class StrategicBrain:
 
         return structured
 
-    def generate_goal_summary(self, goal_result):
+    def generate_goal_summary(self, goal_result, format="dict", filepath=None):
         summary = {
-            "goal": goal_result["goal"],
-            "tags": self.tags,
-            "success": goal_result["success"],
-            "details": goal_result["results"]
+            "Goal": goal_result["goal"],
+            "Tags": ", ".join(self.tags),
+            "Success": goal_result["success"],
+            "Details": goal_result["results"]
         }
+        if format == "csv":
+            headers = ["Goal", "Tags", "Success", "Details"]
+            rows = [[summary["Goal"], summary["Tags"], summary["Success"], str(summary["Details"])]]
+            if filepath:
+                with open(filepath, mode="w", newline="") as file:
+                    writer = csv.writer(file)
+                    writer.writerow(headers)
+                    writer.writerows(rows)
+        elif format == "markdown":
+            markdown_output = f"# Goal Summary\n\n" \
+                              f"**Goal:** {summary['Goal']}\n\n" \
+                              f"**Tags:** {summary['Tags']}\n\n" \
+                              f"**Success:** {summary['Success']}\n\n" \
+                              f"**Details:**\n\n{summary['Details']}\n"
+            if filepath:
+                with open(filepath, mode="w") as file:
+                    file.write(markdown_output)
         return summary
+
+    def summarize_top_tools(self):
+        tool_usage = self.long_term_memory.get_memory().get("tool_usage", {})
+        sorted_tools = sorted(tool_usage.items(), key=lambda x: x[1], reverse=True)[:3]
+        return [{"tool": tool, "usage_count": count} for tool, count in sorted_tools]
 
     def archive_goal_history(self, final):
         entry = {
