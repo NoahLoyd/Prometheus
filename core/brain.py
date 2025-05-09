@@ -33,7 +33,7 @@ class StrategicBrain:
         steps = []
 
         if "money" in goal or "$" in goal:
-            steps.append(("calculator", "Calculate how to reach $1000 in 30 days"))
+            steps.append(("calculator", "1000 / 30"))
             steps.append(("internet", "Search: best ways to make money online 2025"))
             steps.append(("summarizer", "Summarize top 3 money-making strategies"))
             steps.append(("note", f"save: Strategy plan for goal: {goal}"))
