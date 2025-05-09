@@ -13,7 +13,6 @@ class GoalPlanning:
     def extract_tags(self, goal):
         # Extract tags from goal and past memory
         tags = set(self.memory.search_tags(goal))
-        tags.update(self.llm.extract_tags(goal))
         return list(tags)
 
     def generate_plan(self, goal):
