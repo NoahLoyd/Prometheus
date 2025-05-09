@@ -10,35 +10,40 @@ from tools.file_tool import FileTool
 from tools.summarizer_tool import SummarizerTool
 
 def main():
-    # Initialize ToolManager and ShortTermMemory
-    tool_manager = ToolManager()
     memory = ShortTermMemory()
+    tool_manager = ToolManager()
 
-    # Register tools with ToolManager using correct names
+    # Register tools with consistent names
     tool_manager.register_tool("calculator", CalculatorTool())
     tool_manager.register_tool("internet", InternetTool())
     tool_manager.register_tool("note", NoteTool())
     tool_manager.register_tool("file", FileTool())
     tool_manager.register_tool("summarizer", SummarizerTool())
 
-    # Initialize StrategicBrain
+    # Start Promethyn's brain
     brain = StrategicBrain(tool_manager, memory)
 
-    # Set and execute a test goal
-    goal = "Make $1000 this month"
+    # Set a high-level, compound test goal
+    goal = "Make $1000 and grow an audience"
     brain.set_goal(goal)
 
     print("\n--- EXECUTING PLAN ---")
     result = brain.achieve_goal()
 
-    print("\n--- FINAL RESULTS ---")
+    print("\n--- FINAL REPORT ---")
     print(f"Goal: {result['goal']}")
+    print(f"Success: {result['success']}")
+    print("\n--- Step Results ---")
     for step in result["results"]:
         print(f"\n[{step['tool_name']}] {step['query']}")
         if step["success"]:
-            print(f"→ SUCCESS: {step['result']}")
+            print(f"  → SUCCESS: {step['result']}")
         else:
-            print(f"→ FAILURE: {step['error']}")
+            print(f"  → FAILURE: {step['error']}")
+
+    print("\n--- Evaluation Summary ---")
+    evaluation = memory.load("evaluation_summary")
+    print(evaluation)
 
 if __name__ == "__main__":
     main()
