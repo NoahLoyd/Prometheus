@@ -6,4 +6,4 @@ class BaseTool:
         self.description = description
 
     def run(self, query: str) -> str:
-        raise NotImplementedError("Each tool must implement a run method.")
+        raise NotImplementedError("Each tool must implement a run method.") 
