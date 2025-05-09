@@ -33,3 +33,4 @@ class NoteTool(BaseTool):
             return notes if notes else "No notes saved yet."
         except Exception as e:
             return f"Error reading notes: {e}"
+            
