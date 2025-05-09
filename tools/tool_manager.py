@@ -1,5 +1,3 @@
-# tools/tool_manager.py
-
 def run_tool(self, command):
     """Parse and run tool using 'tool_name: input' format."""
     if ":" not in command:
