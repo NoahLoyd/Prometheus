@@ -1,3 +1,5 @@
+# run.py
+
 import os
 from core.agent import PrometheusAgent
 from tools.calculator import CalculatorTool
@@ -5,71 +7,42 @@ from tools.note_tool import NoteTool
 from tools.file_tool import FileTool
 from tools.summarizer_tool import SummarizerTool
 from tools.internet_tool import InternetTool
-from tools.tool_manager import ToolManager  # Fixed import for ToolManager
 
-# Securely load the SERPAPI API key
-os.environ["SERPAPI_API_KEY"] = os.getenv("SERPAPI_API_KEY", "default_key_here")
+# === Load SERPAPI Key ===
+os.environ["SERPAPI_API_KEY"] = "5f4c682efd58236a55d6a7de3fe8a792d933125c8157047a26e0e9c2a9cd5e37"
 
-# Initialize tools
+# === Initialize Tools ===
 tools = [
     CalculatorTool(),
     NoteTool(),
     FileTool(),
     SummarizerTool(),
-    InternetTool(),
+    InternetTool()
 ]
 
-# Initialize ToolManager and register tools
-tool_manager = ToolManager()
-for tool in tools:
-    tool_manager.register_tool(tool.name, tool)
-
-# Initialize agent with ToolManager
-agent = PrometheusAgent(tools=tool_manager)
+# === Initialize Prometheus Agent ===
+agent = PrometheusAgent(tools=tools)
 
 # === Run Tests ===
 def run_tests():
-    try:
-        # Calculator Tests
-        print("Calculator (2 + 2):", agent.run("calculator: 2 + 2"))
-        print("Calculator (Invalid Input):", agent.run("calculator: invalid input"))
-    except Exception as e:
-        print(f"Calculator Error: {e}")
+    print("Calculator Tool:")
+    print(agent.run("calculator: 2 + 2"))
+    print(agent.run("calculator: invalid * 5"))
 
-    try:
-        # Note Tool Tests
-        print("Note Save:", agent.run("note: save: Remember to invest in GPUs"))
-        print("Note List:", agent.run("note: list"))
-    except Exception as e:
-        print(f"Note Tool Error: {e}")
+    print("\nNote Tool:")
+    print(agent.run("note: save: Remember to invest in GPUs"))
+    print(agent.run("note: list"))
 
-    try:
-        # File Tool Tests
-        print("File Write:", agent.run("file: write:test.txt:This is a test file."))
-        print("File Read:", agent.run("file: read:test.txt"))
-        print("File List:", agent.run("file: list"))
-        print("File Read Nonexistent:", agent.run("file: read:nonexistent.txt"))
-    except Exception as e:
-        print(f"File Tool Error: {e}")
+    print("\nFile Tool:")
+    print(agent.run("file: write: test.txt: Hello from Prometheus"))
+    print(agent.run("file: read: test.txt"))
+    print(agent.run("file: list"))
 
-    try:
-        # Summarizer Tool Tests
-        print(
-            "Summarizer:",
-            agent.run(
-                "summarize: Artificial intelligence is a rapidly evolving field that..."
-            ),
-        )
-    except Exception as e:
-        print(f"Summarizer Tool Error: {e}")
+    print("\nSummarizer Tool:")
+    print(agent.run("summarize: Prometheus is a modular AI framework that aims to surpass GPT-4 by integrating reasoning, memory, and tool usage."))
 
-    try:
-        # Internet Tool Tests
-        print("Internet (GPT-5 Latest News):", agent.run("internet: GPT-5 latest news"))
-    except Exception as e:
-        print(f"Internet Tool Error: {e}")
+    print("\nInternet Tool:")
+    print(agent.run("internet: latest news on GPT-5"))
 
-
-# Run all tests
 if __name__ == "__main__":
     run_tests()
