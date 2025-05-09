@@ -7,7 +7,7 @@ class CalculatorTool(BaseTool):
 
     def run(self, query: str) -> str:
         try:
-            allowed_names = {"__builtins__": {}}
+            allowed_names = {"__builtins__": {}}  # Prevent unsafe code execution
             result = eval(query, allowed_names)
             return str(result)
         except Exception as e:
