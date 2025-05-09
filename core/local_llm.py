@@ -1,52 +1,61 @@
 # local_llm.py
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+import re
 import os
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+from ast import literal_eval
 
 class LocalLLM:
+    """
+    A local Hugging Face-based LLM interface for fully offline operation.
+    Supports generating structured plans from high-level goals and context.
+    """
     def __init__(self, model_path="mistral-7b", device="cpu", quantized=False):
         """
-        Initialize the local Hugging Face-based LLM interface.
+        Initialize the LocalLLM with a model and tokenizer loaded from disk.
 
         Parameters:
         - model_path: Path to the local model directory or model name (e.g., "mistral-7b").
         - device: Device to run the model on ("cpu" or "cuda").
-        - quantized: If True, load quantized models for lower memory usage.
+        - quantized: If True, load a quantized model for reduced memory usage.
         """
         self.model_path = model_path
         self.device = device
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
-        if quantized:
-            from transformers import AutoModelForCausalLM
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_path, local_files_only=True, torch_dtype="auto"
-            )
-        else:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_path, local_files_only=True
-            )
-        self.pipeline = pipeline("text-generation", model=self.model, tokenizer=self.tokenizer, device=0 if device == "cuda" else -1)
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
+            if quantized:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_path, local_files_only=True, torch_dtype="auto"
+                )
+            else:
+                self.model = AutoModelForCausalLM.from_pretrained(model_path, local_files_only=True)
+            self.pipeline = pipeline("text-generation", model=self.model, tokenizer=self.tokenizer, device=0 if device == "cuda" else -1)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load model or tokenizer from {model_path}: {e}")
 
     def generate_plan(self, goal, context=None):
         """
-        Generate a structured plan from the given goal and context.
+        Generate a structured plan based on the goal and optional context.
 
         Parameters:
         - goal: The high-level goal to plan for.
-        - context: Optional additional context (e.g., memory, tags, or past goals).
+        - context: Additional context (e.g., memory or related goals).
 
         Returns:
-        - List of (tool_name, query) tuples representing the plan steps.
+        - A list of (tool_name, query) tuples representing the plan steps.
         """
         prompt = self._format_prompt(goal, context)
-        response = self.pipeline(
-            prompt,
-            max_length=256,
-            num_return_sequences=1,
-            do_sample=True,
-            temperature=0.7,
-            top_p=0.9,
-        )[0]["generated_text"]
-        return self._parse_plan(response)
+        try:
+            response = self.pipeline(
+                prompt,
+                max_length=256,
+                num_return_sequences=1,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+            )[0]["generated_text"]
+            return self._parse_plan(response)
+        except Exception as e:
+            raise RuntimeError(f"Failed to generate plan: {e}")
 
     def _format_prompt(self, goal, context=None):
         """
@@ -60,10 +69,7 @@ class LocalLLM:
         - A formatted string prompt.
         """
         context_string = f"Context: {context}" if context else "Context: None"
-        prompt = (f"Goal: {goal}\n"
-                  f"{context_string}\n"
-                  "Generate a structured plan as a list of (tool_name, query) steps:")
-        return prompt
+        return f"Goal: {goal}\n{context_string}\nGenerate a structured plan as a list of (tool_name, query) steps:"
 
     def _parse_plan(self, response):
         """
@@ -76,11 +82,15 @@ class LocalLLM:
         - A list of (tool_name, query) tuples.
         """
         steps = []
-        for line in response.split("\n"):
-            if "(" in line and "," in line:
+        lines = response.split("\n")
+        for line in lines:
+            # Use regex or literal_eval for robust parsing
+            match = re.match(r"\((.*?)\)", line)
+            if match:
                 try:
-                    tool_name, query = line.strip("()").split(", ")
-                    steps.append((tool_name.strip(), query.strip()))
-                except ValueError:
+                    step = literal_eval(match.group(0))
+                    if isinstance(step, tuple) and len(step) == 2:
+                        steps.append(step)
+                except (SyntaxError, ValueError):
                     continue
         return steps
