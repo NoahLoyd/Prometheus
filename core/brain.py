@@ -1,146 +1,124 @@
 # core/brain.py
 
 import time
+from datetime import datetime
 
 
 class StrategicBrain:
     """
-    A class to manage high-level goal execution for the AI agent Promethyn.
-    It breaks down goals into actionable steps, executes them, and logs progress.
+    Strategic reasoning engine for Promethyn.
+    Accepts high-level goals, creates plans, executes them, retries if needed,
+    and logs all activity to memory.
     """
 
     def __init__(self, tool_manager, memory):
-        """
-        Initialize the StrategicBrain with ToolManager and ShortTermMemory.
-
-        Args:
-            tool_manager (ToolManager): The ToolManager instance for executing tools.
-            memory (ShortTermMemory): The memory instance for logging progress.
-        """
         self.tool_manager = tool_manager
         self.memory = memory
         self.goal = None
-        self.plan = None
+        self.plan = []
+
+    def log(self, key, value):
+        timestamp = datetime.now().isoformat()
+        self.memory.save(f"{timestamp}::{key}", value)
 
     def set_goal(self, goal):
-        """
-        Set a high-level goal and plan steps to achieve it.
-
-        Args:
-            goal (str): The high-level goal to be achieved.
-        """
         self.goal = goal
         self.plan = self.plan_goal(goal)
         self.memory.save("current_goal", goal)
         self.memory.save("current_plan", self.plan)
+        self.log("goal_set", goal)
 
     def plan_goal(self, goal):
-        """
-        Plan steps to achieve a high-level goal based on keywords.
-
-        Args:
-            goal (str): The high-level goal to be achieved.
-
-        Returns:
-            list: A list of (tool_name, query) tuples representing the steps.
-        """
+        goal = goal.lower()
         steps = []
-        if "make money" in goal.lower():
-            steps.append(("calculator", "Calculate revenue needed to achieve goal"))
-            steps.append(("internet", "Research methods to make money"))
-        elif "learn" in goal.lower():
-            steps.append(("note", f"save: Create a learning plan for {goal}"))
-            steps.append(("internet", f"Find resources to accomplish {goal}"))
-        elif "grow audience" in goal.lower():
-            steps.append(("summarizer", "Summarize effective audience growth techniques"))
-            steps.append(("internet", "Research audience growth strategies"))
+
+        if "money" in goal or "$" in goal:
+            steps.append(("calculator", "Calculate how to reach $1000 in 30 days"))
+            steps.append(("internet", "Search: best ways to make money online 2025"))
+            steps.append(("summarizer", "Summarize top 3 money-making strategies"))
+            steps.append(("note", f"save: Strategy plan for goal: {goal}"))
+
+        elif "learn" in goal:
+            steps.append(("internet", f"Search: best resources to learn about {goal}"))
+            steps.append(("summarizer", "Summarize top learning paths"))
+            steps.append(("note", f"save: Learning plan for {goal}"))
+
+        elif "audience" in goal or "followers" in goal:
+            steps.append(("internet", "Search: how to grow an audience in 2025"))
+            steps.append(("summarizer", "Summarize audience growth strategies"))
+            steps.append(("note", f"save: Growth plan for {goal}"))
+
         else:
-            steps.append(("note", f"save: Document plan for {goal}"))
+            steps.append(("note", f"save: Custom plan requested: {goal}"))
+
         return steps
 
     def execute_step(self, tool_name, query):
-        """
-        Execute a single action step and log progress.
-
-        Args:
-            tool_name (str): The name of the tool to be used.
-            query (str): The query to be executed by the tool.
-
-        Returns:
-            dict: A dictionary containing the result or error of the execution.
-        """
         try:
             result = self.tool_manager.call_tool(tool_name, query)
+            self.log(f"{tool_name}_success", query)
             self.memory.save(f"{tool_name}_result", result)
             return {"success": True, "result": result}
         except Exception as e:
             error_message = str(e)
-            self.memory.save(f"{tool_name}_error", error_message)
+            self.log(f"{tool_name}_error", error_message)
             return {"success": False, "error": error_message}
 
     def execute_plan(self):
-        """
-        Execute the planned steps and log progress.
-
-        Returns:
-            list: A list of results for each step, including success or error information.
-        """
         if not self.plan:
-            raise ValueError("No plan set. Use set_goal() to define a plan.")
+            raise ValueError("No plan set. Use set_goal() first.")
 
         results = []
-        for tool_name, query in self.plan:
+        for i, (tool_name, query) in enumerate(self.plan):
+            self.log("step_started", f"{tool_name}: {query}")
             result = self.execute_step(tool_name, query)
-            results.append({"tool_name": tool_name, "query": query, **result})
-            self.memory.save("step_result", result)
-            time.sleep(1)  # Simulate real-time processing delay
+            results.append({
+                "tool_name": tool_name,
+                "query": query,
+                **result
+            })
+            self.memory.save(f"step_{i}_result", result)
+            time.sleep(1)
+
         return results
 
     def retry_or_replan(self, failed_steps):
-        """
-        Retry or re-plan for failed steps.
-
-        Args:
-            failed_steps (list): The steps that failed.
-
-        Returns:
-            list: A new list of (tool_name, query) steps.
-        """
         new_steps = []
         for step in failed_steps:
-            tool_name = step["tool_name"]
+            tool = step["tool_name"]
             query = step["query"]
+
             if "retry" not in query.lower():
-                new_steps.append((tool_name, f"Retry: {query}"))
+                new_query = f"Retry: {query}"
             else:
-                new_steps.append(("note", f"save: Log failure for {query}"))
-            self.memory.save("replan_step", {"tool_name": tool_name, "query": query})
+                new_query = f"Log failure for {query}"
+                tool = "note"
+
+            self.log("replan", {"tool": tool, "query": new_query})
+            new_steps.append((tool, new_query))
+
         return new_steps
 
     def achieve_goal(self):
-        """
-        Execute the current plan, handle failures, and log the results.
-
-        Returns:
-            dict: The final result of the goal execution, including successes and failures.
-        """
         if not self.goal or not self.plan:
             raise ValueError("Goal and plan must be set before execution.")
 
         step_results = self.execute_plan()
-        failed_steps = [step for step in step_results if not step["success"]]
+        failed = [step for step in step_results if not step["success"]]
 
-        if failed_steps:
-            new_steps = self.retry_or_replan(failed_steps)
+        if failed:
+            retries = self.retry_or_replan(failed)
+            self.plan = retries
             retry_results = self.execute_plan()
             step_results.extend(retry_results)
 
-        final_results = {
+        final = {
             "goal": self.goal,
             "results": step_results,
-            "failures": failed_steps,
-            "success": all(step["success"] for step in step_results),
+            "failures": failed,
+            "success": all(r["success"] for r in step_results)
         }
 
-        self.memory.save("goal_result", final_results)
-        return final_results
+        self.memory.save("goal_result", final)
+        self.log("goal_complete", final["success"])
+        return final
