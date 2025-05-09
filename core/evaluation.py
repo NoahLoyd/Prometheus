@@ -1,10 +1,20 @@
 # evaluation.py
 class Evaluation:
-    def rank_steps(self, results):
-        return sorted(results, key=lambda x: x['score'], reverse=True)
+    def __init__(self, memory):
+        self.memory = memory
 
-    def generate_insights(self, results):
-        return [result['insight'] for result in results if 'insight' in result]
+    def rank_steps(self, results):
+        # Weighted scoring based on context and performance
+        return sorted(results, key=lambda x: self._compute_score(x), reverse=True)
+
+    def _compute_score(self, result):
+        score = 2 if result["success"] else -1
+        if "substituted_tool" in result:
+            score -= 1  # Penalize substitutions
+        return score
 
     def generate_summary(self, results):
-        return "\n".join([result['summary'] for result in results if 'summary' in result])
+        # Generate insights and summaries
+        insights = [res.get("insight", "") for res in results if res["success"]]
+        self.memory.log_insights(insights)
+        return "\n".join(insights)
