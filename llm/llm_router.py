@@ -7,7 +7,8 @@ import time
 class LLMRouter:
     """
     A router that intelligently selects, manages, and executes requests
-    to different LLMs based on scoring metrics.
+    to different LLMs based on scoring metrics and adaptive feedback.
+    Prepares the system for future multi-agent collaboration.
     """
 
     def __init__(self, config: Dict[str, Dict]):
@@ -20,6 +21,7 @@ class LLMRouter:
         self.config = config
         self.models = {}
         self.logger = Logging()
+        self.feedback_weights = {}  # Dynamic task-specific feedback weights
 
     def _get_model(self, name: str) -> BaseLLM:
         """
@@ -61,10 +63,14 @@ class LLMRouter:
             # Log success
             self.logger.log_model_performance(best_model_name, task_type, success=True, latency=elapsed_time)
 
+            # Update adaptive feedback weights
+            self._update_feedback_weights(best_model_name, task_type, success=True)
+
             return result
         except Exception as e:
             # Log failure and attempt failover
             self.logger.log_model_performance(best_model_name, task_type, success=False, latency=None)
+            self._update_feedback_weights(best_model_name, task_type, success=False)
             failover_model_name = self._failover_best_model(best_model_name)
             if failover_model_name:
                 return self.generate_plan(goal, context, task_type)
@@ -80,16 +86,18 @@ class LLMRouter:
         """
         scores = {}
         for model_name, model_config in self.config.items():
-            # Use historical success rate and response time
+            # Use historical success rate, response time, and task relevance
             success_rate = self.logger.get_model_success_rate(model_name)
             response_time = self.logger.get_model_avg_latency(model_name)
             relevance = 1 if task_type and task_type in model_config.get("tags", []) else 0
+            feedback_weight = self.feedback_weights.get((model_name, task_type), 1.0)
 
             # Calculate a weighted score
             scores[model_name] = (
-                0.6 * success_rate +
-                0.3 * (1 / (response_time + 1e-6)) +  # Inverse latency
-                0.1 * relevance
+                0.5 * success_rate +
+                0.2 * (1 / (response_time + 1e-6)) +  # Inverse latency
+                0.2 * relevance +
+                0.1 * feedback_weight
             )
 
         # Prioritize local open-source models
@@ -119,6 +127,19 @@ class LLMRouter:
 
         return next_best_model
 
+    def _update_feedback_weights(self, model_name: str, task_type: Optional[str], success: bool):
+        """
+        Update feedback-based weights for a specific model and task type.
+
+        :param model_name: The name of the model.
+        :param task_type: The type of task the model was used for.
+        :param success: Whether the model succeeded.
+        """
+        key = (model_name, task_type)
+        current_weight = self.feedback_weights.get(key, 1.0)
+        adjustment = 0.1 if success else -0.1
+        self.feedback_weights[key] = max(0.1, current_weight + adjustment)  # Ensure weight stays positive
+
     def log_model_performance(self, model_name: str, task_type: Optional[str], success: bool, latency: Optional[float]):
         """
         Log the performance of a model.
@@ -141,3 +162,14 @@ class LLMRouter:
                 "latency": latency,
             }
         )
+
+    # Placeholder for future multi-agent collaboration hooks
+    def collaborate_with_agents(self, agents: List[str], task_type: Optional[str] = None):
+        """
+        Placeholder method for future multi-agent collaboration.
+
+        :param agents: A list of agent identifiers for collaboration.
+        :param task_type: Optional task type for task-specific collaboration.
+        """
+        # Future implementation: Coordinate task distribution across agents
+        pass
