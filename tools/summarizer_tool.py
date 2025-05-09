@@ -1,5 +1,4 @@
 # tools/summarizer_tool.py
-
 from tools.base_tool import BaseTool
 from textwrap import shorten
 
