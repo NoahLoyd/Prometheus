@@ -48,6 +48,11 @@ class StrategicBrain:
             steps.append(("summarizer", "Summarize audience growth strategies"))
             steps.append(("note", f"save: Growth plan for {goal}"))
 
+        elif "fitness" in goal or "health" in goal:
+            steps.append(("internet", f"Search: best fitness plans for {goal}"))
+            steps.append(("summarizer", "Summarize effective fitness strategies"))
+            steps.append(("note", f"save: Fitness plan for {goal}"))
+
         else:
             steps.append(("note", f"save: Custom plan requested: {goal}"))
 
@@ -122,3 +127,4 @@ class StrategicBrain:
         self.memory.save("goal_result", final)
         self.log("goal_complete", final["success"])
         return final
+       
