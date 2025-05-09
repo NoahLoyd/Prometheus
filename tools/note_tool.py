@@ -17,8 +17,6 @@ class NoteTool(BaseTool):
             return "Invalid command. Use 'save: message' to save a note or 'list' to list notes."
 
     def _save_note(self, note: str) -> str:
-        if not note:
-            return "Cannot save an empty note."
         try:
             with open(self.notes_file, "a") as file:
                 file.write(note + "\n")
