@@ -4,6 +4,9 @@ import requests
 from tools.base_tool import BaseTool
 
 class InternetTool(BaseTool):
+    def __init__(self):
+        super().__init__(name="internet", description="Perform internet searches using SERPAPI.")
+
     def run(self, query: str) -> str:
         api_key = os.getenv("SERPAPI_API_KEY")
         if not api_key:
