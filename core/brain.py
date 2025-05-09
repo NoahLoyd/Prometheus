@@ -2,7 +2,7 @@ import csv
 import time
 from datetime import datetime
 import re
-
+from core.planner_llm import LLMPlanner  # Import LLMPlanner
 
 class StrategicBrain:
     def __init__(self, tool_manager, short_term_memory, long_term_memory):
@@ -12,6 +12,7 @@ class StrategicBrain:
         self.goal = None
         self.plan = []
         self.tags = []
+        self.llm_planner = LLMPlanner()  # Instantiate LLMPlanner
 
     def log(self, key, value):
         timestamp = datetime.now().isoformat()
@@ -47,7 +48,17 @@ class StrategicBrain:
         self.short_term_memory.save("current_plan", self.plan)
         self.log("goal_set", {"goal": goal, "tags": self.tags})
 
-    def plan_goal(self, goal):
+    def plan_goal(self, goal, use_llm=True):
+        if use_llm:
+            try:
+                steps = self.llm_planner.plan(goal)
+                self.plan = steps
+                self.log("llm_planner_success", steps)
+                return steps
+            except Exception as e:
+                self.log("llm_planner_failure", str(e))
+                # Fall back to static planning logic
+
         goal = goal.lower()
         steps = []
 
@@ -75,6 +86,7 @@ class StrategicBrain:
         if not steps:
             steps.append(("note", f"save: Custom plan requested: {goal}"))
 
+        self.plan = steps
         return steps
 
     def execute_step(self, tool_name, query):
