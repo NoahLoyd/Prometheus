@@ -49,13 +49,13 @@ class StrategicBrain:
             steps.append(("calculator", "Calculate revenue needed to achieve goal"))
             steps.append(("internet", "Research methods to make money"))
         elif "learn" in goal.lower():
-            steps.append(("note", f"Create a learning plan for {goal}"))
+            steps.append(("note", f"save: Create a learning plan for {goal}"))
             steps.append(("internet", f"Find resources to accomplish {goal}"))
         elif "grow audience" in goal.lower():
             steps.append(("summarizer", "Summarize effective audience growth techniques"))
             steps.append(("internet", "Research audience growth strategies"))
         else:
-            steps.append(("note", f"Document plan for {goal}"))
+            steps.append(("note", f"save: Document plan for {goal}"))
         return steps
 
     def execute_step(self, tool_name, query):
@@ -113,7 +113,7 @@ class StrategicBrain:
             if "retry" not in query.lower():
                 new_steps.append((tool_name, f"Retry: {query}"))
             else:
-                new_steps.append(("note", f"Log failure for {query}"))
+                new_steps.append(("note", f"save: Log failure for {query}"))
             self.memory.save("replan_step", {"tool_name": tool_name, "query": query})
         return new_steps
 
