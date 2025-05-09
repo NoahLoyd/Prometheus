@@ -1,48 +1,46 @@
 # run.py
 
-import os
-from core.agent import PrometheusAgent
+from core.brain import StrategicBrain
+from tools.tool_manager import ToolManager
+from memory.short_term import ShortTermMemory
 from tools.calculator import CalculatorTool
+from tools.internet_tool import InternetTool
 from tools.note_tool import NoteTool
 from tools.file_tool import FileTool
 from tools.summarizer_tool import SummarizerTool
-from tools.internet_tool import InternetTool
 
-# === Load SERPAPI Key ===
-os.environ["SERPAPI_API_KEY"] = "5f4c682efd58236a55d6a7de3fe8a792d933125c8157047a26e0e9c2a9cd5e37"
+def main():
+    # Initialize ToolManager and ShortTermMemory
+    tool_manager = ToolManager()
+    memory = ShortTermMemory()
 
-# === Initialize Tools ===
-tools = [
-    CalculatorTool(),
-    NoteTool(),
-    FileTool(),
-    SummarizerTool(),
-    InternetTool()
-]
+    # Register tools with ToolManager
+    tool_manager.register_tool("calculator", CalculatorTool())
+    tool_manager.register_tool("internet_tool", InternetTool())
+    tool_manager.register_tool("note_tool", NoteTool())
+    tool_manager.register_tool("file_tool", FileTool())
+    tool_manager.register_tool("summarizer_tool", SummarizerTool())
 
-# === Initialize Prometheus Agent ===
-agent = PrometheusAgent(tools=tools)
+    # Initialize StrategicBrain
+    brain = StrategicBrain(tool_manager, memory)
 
-# === Run Tests ===
-def run_tests():
-    print("Calculator Tool:")
-    print(agent.run("calculator: 2 + 2"))
-    print(agent.run("calculator: invalid * 5"))
+    # Set a test goal
+    test_goal = "Make $1000 this month"
+    brain.memory.save("current_goal", test_goal)
 
-    print("\nNote Tool:")
-    print(agent.run("note: save: Remember to invest in GPUs"))
-    print(agent.run("note: list"))
+    # Execute the goal plan
+    result = brain.achieve_goal(test_goal)
 
-    print("\nFile Tool:")
-    print(agent.run("file: write: test.txt: Hello from Prometheus"))
-    print(agent.run("file: read: test.txt"))
-    print(agent.run("file: list"))
-
-    print("\nSummarizer Tool:")
-    print(agent.run("summarizer: Prometheus is a modular AI framework that aims to surpass GPT-4 by integrating reasoning, memory, and tool usage."))
-
-    print("\nInternet Tool:")
-    print(agent.run("internet: latest news on GPT-5"))
+    # Print results with clear formatting
+    print("\nGoal Execution Results:")
+    print(f"Goal: {result['goal']}")
+    for step_result in result["results"]:
+        tool_name = step_result["tool_name"]
+        query = step_result["query"]
+        if step_result["success"]:
+            print(f"[SUCCESS] Tool: {tool_name}, Query: {query}, Result: {step_result['result']}")
+        else:
+            print(f"[FAILURE] Tool: {tool_name}, Query: {query}, Error: {step_result['error']}")
 
 if __name__ == "__main__":
-    run_tests()
+    main()
