@@ -1,38 +1,35 @@
 # core/agent.py
 
 from tools.tool_manager import ToolManager
-from tools.calculator import CalculatorTool
-from tools.note_tool import NoteTool
-from tools.file_tool import FileTool
-from tools.summarizer_tool import SummarizerTool
-from tools.internet_tool import InternetTool
 
 class PrometheusAgent:
     def __init__(self, tools=None):
         self.tool_manager = ToolManager()
 
         # Register core tools with explicit names
-        self.register_named_tool("calculator", CalculatorTool())
-        self.register_named_tool("note", NoteTool())
-        self.register_named_tool("file", FileTool())
-        self.register_named_tool("summarize", SummarizerTool())
-        self.register_named_tool("internet", InternetTool())
-
-        # Allow optional tools passed in
         if tools:
             for tool in tools:
-                self.register_named_tool(tool.__class__.__name__.lower(), tool)
+                self.register_named_tool(tool.name.lower(), tool)
 
     def register_named_tool(self, name, tool_instance):
+        """
+        Registers a tool with a specific name and its instance.
+        """
         if hasattr(tool_instance, "run"):
-            self.tool_manager.register_tool(name, tool_instance.run)
-        else:
             self.tool_manager.register_tool(name, tool_instance)
+        else:
+            raise ValueError(f"Tool '{name}' must implement a 'run' method.")
 
     def run(self, command: str) -> str:
-        """Handle commands like 'tool_name: input'."""
-        if ":" in command:
-            tool_name, query = command.split(":", 1)
-            return self.tool_manager.call_tool(tool_name.strip().lower(), query.strip())
-        else:
-            return self.tool_manager.run_tool(command.strip())
+        """
+        Handle commands like 'tool_name: input'.
+        """
+        if ":" not in command:
+            return "Invalid command format. Use 'tool_name: input'."
+
+        parts = command.split(":", 1)
+        if len(parts) != 2 or not parts[0].strip():
+            return "Invalid command format. Tool name cannot be empty."
+
+        tool_name, query = parts
+        return self.tool_manager.call_tool(tool_name.strip().lower(), query.strip())
