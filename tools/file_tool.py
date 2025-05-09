@@ -1,29 +1,33 @@
-# tools/internet_tool.py
+# tools/file_tool.py
 import os
-import requests
 from tools.base_tool import BaseTool
 
-class InternetTool(BaseTool):
+class FileTool(BaseTool):
     def __init__(self):
-        super().__init__(name="internet", description="Perform internet searches using SERPAPI.")
+        super().__init__(name="file", description="Read and write files.")
 
     def run(self, query: str) -> str:
-        api_key = os.getenv("SERPAPI_API_KEY")
-        if not api_key:
-            return "Error: SERPAPI_API_KEY not set."
+        command, _, data = query.partition(":")
+        command = command.strip().lower()
+        if command == "read":
+            return self._read_file(data.strip())
+        elif command == "write":
+            filename, _, content = data.partition(":")
+            return self._write_file(filename.strip(), content.strip())
+        else:
+            return "Invalid command. Use 'read: filename' or 'write: filename: content'."
 
-        params = {
-            "q": query,
-            "api_key": api_key,
-            "engine": "google"
-        }
-
+    def _read_file(self, filename: str) -> str:
         try:
-            response = requests.get("https://serpapi.com/search", params=params)
-            response.raise_for_status()
-            results = response.json().get("organic_results", [])
-            if not results:
-                return "No results found."
-            return "\n\n".join(f"{r['title']}\n{r['link']}" for r in results[:3])
+            with open(filename, "r") as file:
+                return file.read()
         except Exception as e:
-            return f"Search failed: {e}"
+            return f"Error reading file: {e}"
+
+    def _write_file(self, filename: str, content: str) -> str:
+        try:
+            with open(filename, "w") as file:
+                file.write(content)
+            return f"File '{filename}' written successfully."
+        except Exception as e:
+            return f"Error writing to file: {e}"
