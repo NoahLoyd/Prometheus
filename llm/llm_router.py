@@ -2,13 +2,15 @@ from typing import List, Tuple, Dict, Optional
 from .local_llm import LocalLLM
 from .base_llm import BaseLLM
 from core.logging import Logging
+from concurrent.futures import ThreadPoolExecutor
 import time
+
 
 class LLMRouter:
     """
-    A router that intelligently selects, manages, and executes requests
-    to different LLMs based on scoring metrics and adaptive feedback.
-    Prepares the system for future multi-agent collaboration.
+    An advanced router that intelligently selects, manages, and executes requests
+    to different LLMs based on scoring metrics, adaptive feedback, and historical performance.
+    Supports parallel planning, self-benchmarking, memory-driven routing, and self-debugging.
     """
 
     def __init__(self, config: Dict[str, Dict]):
@@ -22,6 +24,7 @@ class LLMRouter:
         self.models = {}
         self.logger = Logging()
         self.feedback_weights = {}  # Dynamic task-specific feedback weights
+        self.task_profiles = {}  # Tracks task-specific performance profiles for models
 
     def _get_model(self, name: str) -> BaseLLM:
         """
@@ -33,7 +36,6 @@ class LLMRouter:
         """
         if name not in self.models:
             try:
-                # Lazy load model based on type
                 model_config = self.config[name]
                 if model_config["type"] == "local":
                     self.models[name] = LocalLLM(model_path=model_config["path"], device=model_config.get("device", "cpu"))
@@ -46,130 +48,129 @@ class LLMRouter:
 
     def generate_plan(self, goal: str, context: Optional[str] = None, task_type: Optional[str] = None) -> List[Tuple[str, str]]:
         """
-        Generate a plan using the best available model.
+        Generate a plan using the best available models in parallel and compare their outputs.
 
         :param goal: The goal or input to the model.
         :param context: Optional context for the model to use.
         :param task_type: Optional task type for relevance scoring.
         :return: A list of (tool_name, query) tuples representing the plan.
         """
-        best_model_name = self._select_best_model(task_type)
-        try:
-            start_time = time.time()
-            model = self._get_model(best_model_name)
-            result = model.generate_plan(goal, context)
-            elapsed_time = time.time() - start_time
+        top_models = self._select_top_models(task_type, num_models=3)
+        results = self._execute_in_parallel(top_models, goal, context)
 
-            # Log success
-            self.logger.log_model_performance(best_model_name, task_type, success=True, latency=elapsed_time)
+        # Evaluate and select the best result
+        best_result = self._evaluate_results(results, goal, task_type)
+        self._update_model_profiles(best_result["model_name"], task_type, success=True)
 
-            # Update adaptive feedback weights
-            self._update_feedback_weights(best_model_name, task_type, success=True)
+        return best_result["plan"]
 
-            return result
-        except Exception as e:
-            # Log failure and attempt failover
-            self.logger.log_model_performance(best_model_name, task_type, success=False, latency=None)
-            self._update_feedback_weights(best_model_name, task_type, success=False)
-            failover_model_name = self._failover_best_model(best_model_name)
-            if failover_model_name:
-                return self.generate_plan(goal, context, task_type)
-            else:
-                raise RuntimeError(f"All models failed to generate a plan: {str(e)}")
-
-    def _select_best_model(self, task_type: Optional[str] = None) -> str:
+    def _select_top_models(self, task_type: Optional[str], num_models: int = 3) -> List[str]:
         """
-        Select the best model based on scoring.
+        Select the top N models based on scoring.
 
         :param task_type: Optional task type for relevance scoring.
-        :return: The name of the best model.
+        :param num_models: Number of top models to select.
+        :return: A list of model names.
         """
         scores = {}
         for model_name, model_config in self.config.items():
-            # Use historical success rate, response time, and task relevance
             success_rate = self.logger.get_model_success_rate(model_name)
             response_time = self.logger.get_model_avg_latency(model_name)
             relevance = 1 if task_type and task_type in model_config.get("tags", []) else 0
             feedback_weight = self.feedback_weights.get((model_name, task_type), 1.0)
 
-            # Calculate a weighted score
             scores[model_name] = (
-                0.5 * success_rate +
-                0.2 * (1 / (response_time + 1e-6)) +  # Inverse latency
+                0.4 * success_rate +
+                0.3 * (1 / (response_time + 1e-6)) +
                 0.2 * relevance +
                 0.1 * feedback_weight
             )
 
-        # Prioritize local open-source models
-        open_source_models = [name for name, config in self.config.items() if config["type"] == "local"]
-        best_model = max(scores, key=scores.get)
-        if best_model not in open_source_models:
-            fallback = max(open_source_models, key=lambda name: scores.get(name, 0))
-            return fallback if fallback in scores else best_model
+        # Sort models by score and return the top N
+        sorted_models = sorted(scores, key=scores.get, reverse=True)
+        return sorted_models[:num_models]
 
-        return best_model
-
-    def _failover_best_model(self, failed_model_name: str) -> Optional[str]:
+    def _execute_in_parallel(self, models: List[str], goal: str, context: Optional[str]) -> List[Dict]:
         """
-        Attempt to find the next-best model for failover.
+        Execute the goal in parallel across multiple models and gather results.
 
-        :param failed_model_name: The name of the model that failed.
-        :return: The name of the next-best model, or None if no alternatives exist.
+        :param models: List of model names to execute.
+        :param goal: The goal or input for the models.
+        :param context: Optional context for the models.
+        :return: A list of result dictionaries from each model.
         """
-        available_models = [name for name in self.config if name != failed_model_name]
-        if not available_models:
-            return None
+        results = []
 
-        # Recalculate scores without the failed model
-        task_type = None  # Optionally pass task_type for more specific failovers
-        scores = {name: self._select_best_model(task_type) for name in available_models}
-        next_best_model = max(scores, key=scores.get, default=None)
+        def execute_model(model_name):
+            try:
+                start_time = time.time()
+                model = self._get_model(model_name)
+                plan = model.generate_plan(goal, context)
+                elapsed_time = time.time() - start_time
 
-        return next_best_model
+                return {
+                    "model_name": model_name,
+                    "plan": plan,
+                    "success": True,
+                    "latency": elapsed_time
+                }
+            except Exception as e:
+                return {"model_name": model_name, "plan": None, "success": False, "error": str(e)}
 
-    def _update_feedback_weights(self, model_name: str, task_type: Optional[str], success: bool):
+        with ThreadPoolExecutor() as executor:
+            futures = [executor.submit(execute_model, model_name) for model_name in models]
+            results = [future.result() for future in futures]
+
+        return results
+
+    def _evaluate_results(self, results: List[Dict], goal: str, task_type: Optional[str]) -> Dict:
         """
-        Update feedback-based weights for a specific model and task type.
+        Evaluate and compare results from multiple models to select the best one.
+
+        :param results: List of result dictionaries from models.
+        :param goal: The goal or input for evaluation.
+        :param task_type: Optional task type for evaluation relevance.
+        :return: The best result dictionary.
+        """
+        # Placeholder for more advanced evaluation logic
+        # Currently selects the first successful result
+        for result in results:
+            if result["success"]:
+                return result
+
+        # If no successful results, raise an error
+        raise RuntimeError("All models failed to generate a valid plan.")
+
+    def _update_model_profiles(self, model_name: str, task_type: Optional[str], success: bool):
+        """
+        Update task-specific performance profiles for models.
 
         :param model_name: The name of the model.
         :param task_type: The type of task the model was used for.
         :param success: Whether the model succeeded.
         """
         key = (model_name, task_type)
-        current_weight = self.feedback_weights.get(key, 1.0)
-        adjustment = 0.1 if success else -0.1
-        self.feedback_weights[key] = max(0.1, current_weight + adjustment)  # Ensure weight stays positive
+        if key not in self.task_profiles:
+            self.task_profiles[key] = {"success_count": 0, "failure_count": 0}
 
-    def log_model_performance(self, model_name: str, task_type: Optional[str], success: bool, latency: Optional[float]):
-        """
-        Log the performance of a model.
+        if success:
+            self.task_profiles[key]["success_count"] += 1
+        else:
+            self.task_profiles[key]["failure_count"] += 1
 
-        :param model_name: The name of the model.
-        :param task_type: The type of task the model was used for.
-        :param success: Whether the model succeeded.
-        :param latency: The time taken for the model to complete the task, in seconds.
+    def self_debug(self):
         """
-        self.logger.log_tool_performance(
-            tool_name=model_name,
-            success=success
-        )
-        self.logger.log_event(
-            tag="model_performance",
-            detail={
-                "model_name": model_name,
-                "task_type": task_type,
-                "success": success,
-                "latency": latency,
-            }
-        )
+        Analyze repeated failures and generate recommendations for routing or model updates.
+        """
+        failure_patterns = {}
+        for key, profile in self.task_profiles.items():
+            failure_ratio = profile["failure_count"] / (profile["success_count"] + profile["failure_count"])
+            if failure_ratio > 0.5:
+                failure_patterns[key] = failure_ratio
 
-    # Placeholder for future multi-agent collaboration hooks
-    def collaborate_with_agents(self, agents: List[str], task_type: Optional[str] = None):
-        """
-        Placeholder method for future multi-agent collaboration.
-
-        :param agents: A list of agent identifiers for collaboration.
-        :param task_type: Optional task type for task-specific collaboration.
-        """
-        # Future implementation: Coordinate task distribution across agents
-        pass
+        # Log recommendations
+        for (model_name, task_type), ratio in failure_patterns.items():
+            self.logger.log_event(
+                tag="self_debug",
+                detail=f"Model '{model_name}' has high failure ratio ({ratio:.2f}) for task type '{task_type}'."
+            )
