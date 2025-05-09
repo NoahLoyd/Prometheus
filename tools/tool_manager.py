@@ -28,3 +28,4 @@ class ToolManager:
             return tool.run(query)
         except Exception as e:
             return f"Error executing tool '{tool_name}': {e}"
+            
