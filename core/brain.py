@@ -20,8 +20,20 @@ class StrategicBrain:
             raise ValueError("Goal and plan must be set before execution.")
         results = self.execution.execute_plan(self.plan, batch_mode=batch_mode)
         self.logging.log_goal_lifecycle(self.goal, results)
+        
+        # Reflection and Comparison
+        reflection = self.evaluation.reflect_on_performance(results)
+        self.logging.log_reflection(reflection)
+        comparison = self.evaluation.compare_with_past_goals(self.goal, results)
         insights = self.evaluation.generate_summary(results)
-        return results, insights
+
+        # Return detailed report
+        return {
+            "results": results,
+            "reflection": reflection,
+            "comparison": comparison,
+            "insights": insights,
+        }
 
     def generate_goal_summary(self):
         results = self.logging.memory.retrieve_short_term()
@@ -30,4 +42,6 @@ class StrategicBrain:
     def summarize_top_tools(self):
         tool_usage = self.logging.memory.get_tool_usage()
         return sorted(tool_usage.items(), key=lambda x: x[1], reverse=True)[:3]
-       
+
+    def generate_daily_review(self):
+        return self.logging.generate_daily_review()
