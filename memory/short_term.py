@@ -1,31 +1,51 @@
-import json
-import os
+# memory/short_term.py
 
 class ShortTermMemory:
-    def __init__(self, limit=10, filepath="memory.json"):
-        self.limit = limit
-        self.filepath = filepath
-        self.buffer = self._load_memory()
+    """
+    A class to manage short-term memory for Promethyn AI.
+    Stores key-value pairs for quick access during runtime.
+    """
 
-    def add(self, item):
-        self.buffer.append(item)
-        if len(self.buffer) > self.limit:
-            self.buffer.pop(0)
-        self._save_memory()
+    def __init__(self):
+        """
+        Initializes an empty memory store.
+        """
+        self.memory_store = {}
 
-    def get_all(self):
-        return self.buffer
+    def save(self, key: str, value: any):
+        """
+        Stores a value under the specified key.
+
+        Args:
+            key (str): The key to store the value under.
+            value (any): The value to store.
+        """
+        self.memory_store[key] = value
+
+    def load(self, key: str):
+        """
+        Retrieves the value stored under the specified key.
+
+        Args:
+            key (str): The key whose value should be retrieved.
+
+        Returns:
+            any: The value associated with the key, or None if not found.
+        """
+        return self.memory_store.get(key, None)
+
+    def delete(self, key: str):
+        """
+        Deletes the value stored under the specified key.
+
+        Args:
+            key (str): The key to delete from the memory store.
+        """
+        if key in self.memory_store:
+            del self.memory_store[key]
 
     def clear(self):
-        self.buffer = []
-        self._save_memory()
-
-    def _save_memory(self):
-        with open(self.filepath, "w") as f:
-            json.dump(self.buffer, f)
-
-    def _load_memory(self):
-        if os.path.exists(self.filepath):
-            with open(self.filepath, "r") as f:
-                return json.load(f)
-        return []
+        """
+        Clears all key-value pairs from the memory store.
+        """
+        self.memory_store.clear()
