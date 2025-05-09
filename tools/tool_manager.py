@@ -1,52 +1,26 @@
-class ToolManager:
+# Test script to verify ToolManager
+from tools.tool_manager import ToolManager
+
+class MockTool:
     """
-    A class to manage and run tools using the 'tool_name: input' format.
+    A mock tool for testing purposes.
     """
+    def __init__(self, name):
+        self.name = name
 
-    def __init__(self, tools=None):
-        """
-        Initialize the ToolManager with a list of tools.
-        Each tool should have a .run(query) method and a unique name.
-        """
-        self.tools = tools or {}
+    def run(self, query):
+        return f"{self.name} executed with query: {query}"
 
-    def register_tool(self, tool_name, tool_instance):
-        """
-        Register a tool with the manager.
-        :param tool_name: The name of the tool (str).
-        :param tool_instance: The tool instance (must have a .run() method).
-        """
-        self.tools[tool_name.lower()] = tool_instance
+# Initialize ToolManager
+tool_manager = ToolManager()
 
-    def call_tool(self, tool_name, query):
-        """
-        Call the specified tool with the given query.
-        :param tool_name: The name of the tool (str).
-        :param query: The query string to pass to the tool.
-        :return: The result of the tool's execution.
-        """
-        tool = self.tools.get(tool_name.lower())
-        if not tool:
-            return f"Error: Tool '{tool_name}' not found."
-        if not hasattr(tool, "run"):
-            return f"Error: Tool '{tool_name}' does not have a 'run' method."
-        return tool.run(query)
+# Register mock tools
+tool_manager.register_tool("mock1", MockTool("MockTool1"))
+tool_manager.register_tool("mock2", MockTool("MockTool2"))
 
-    def run_tool(self, command):
-        """
-        Parse and run a tool using the 'tool_name: input' format.
-        :param command: The command string (e.g., "tool_name: input").
-        :return: The result of the tool's execution.
-        """
-        if ":" not in command:
-            return "Invalid command format. Use 'tool_name: input'."
+# Run the mock tools
+print(tool_manager.run_tool("mock1: Test query 1"))  # Output: MockTool1 executed with query: Test query 1
+print(tool_manager.run_tool("mock2: Test query 2"))  # Output: MockTool2 executed with query: Test query 2
 
-        parts = command.split(":", 1)
-        if len(parts) != 2:
-            return "Command must follow the format 'tool_name: input'."
-
-        tool_name, query = parts
-        tool_name = tool_name.strip().lower()
-        query = query.strip()
-
-        return self.call_tool(tool_name, query)
+# Test invalid tool
+print(tool_manager.run_tool("mock3: Test query 3"))  # Output: Error: Tool 'mock3' not found.
