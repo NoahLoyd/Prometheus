@@ -1,38 +1,24 @@
 from typing import List, Dict, Optional
-from core.logging import Logging
 
 
 class EvaluationStrategy:
-    def evaluate(self, results: List[Dict], goal: str, task_type: Optional[str]) -> Dict:
-        ...
-
-
-class DefaultEvaluationStrategy(EvaluationStrategy):
-    def __init__(self, logger: Logging):
-        self.logger = logger
+    """
+    Compares multiple model outputs and chooses the best based on task success, coherence, and relevance.
+    """
 
     def evaluate(self, results: List[Dict], goal: str, task_type: Optional[str]) -> Dict:
         """
-        Evaluate and compare results from multiple models to select the best one.
-        Adds semantic similarity and entropy-based diversity scoring.
+        Evaluate model outputs and select the best one.
+
+        :param results: List of model output results.
+        :param goal: The original goal or task.
+        :param task_type: The type of task (e.g., 'reasoning', 'coding').
+        :return: The best result dictionary.
         """
-        def score_result(result: Dict) -> float:
-            if not result["success"]:
-                return 0.0
+        successful_results = [result for result in results if result["success"]]
+        if not successful_results:
+            raise ValueError("No successful results to evaluate.")
 
-            plan = result["plan"]
-            semantic_similarity = self.logger.calculate_semantic_similarity(goal, plan)
-            tool_diversity = len(set(step[0] for step in plan))  # Unique tools used
-            entropy_score = self.logger.calculate_plan_entropy(plan)
-            past_success = self.logger.get_model_success_rate(result["model_name"])
-
-            return (
-                0.4 * semantic_similarity +
-                0.3 * tool_diversity +
-                0.2 * entropy_score +
-                0.1 * past_success
-            )
-
-        scored_results = [(score_result(result), result) for result in results]
-        best_result = max(scored_results, key=lambda x: x[0])[1]
-        return best_result
+        # Sort by relevance and coherence
+        sorted_results = sorted(successful_results, key=lambda r: r.get("relevance", 0) + r.get("coherence", 0), reverse=True)
+        return sorted_results[0]
