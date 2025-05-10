@@ -6,6 +6,7 @@ from .local_llm import LocalLLM
 from .base_llm import BaseLLM
 from core.logging import Logging
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import time
 
 
@@ -25,6 +26,7 @@ class LLMRouter:
         self.logger = Logging()
         self.feedback_weights: Dict[Tuple[str, Optional[str]], float] = {}
         self.task_profiles: Dict[Tuple[str, Optional[str]], Dict[str, int]] = {}
+        self.cache: Dict[str, List[Tuple[str, str]]] = {}
         self.evaluation_strategy = evaluation_strategy
         self.fallback_strategy = fallback_strategy
         self.voting_strategy = voting_strategy
@@ -42,6 +44,11 @@ class LLMRouter:
                 )
         return self.models[name]
 
+    def _hash_query(self, goal: str, context: Optional[str], task_type: Optional[str]) -> str:
+        """Generate a unique hash for caching based on the query."""
+        query_str = f"{goal}:{context}:{task_type}"
+        return hashlib.sha256(query_str.encode()).hexdigest()
+
     def generate_plan(self, goal: str, context: Optional[str] = None, task_type: Optional[str] = None) -> List[Tuple[str, str]]:
         """
         Generate a task execution plan based on the goal, context, and task type.
@@ -52,17 +59,31 @@ class LLMRouter:
         :return: A list of task execution plans.
         """
         self.logger.info(f"Generating plan for goal: {goal} with task type: {task_type}")
+
+        # Check cache
+        query_hash = self._hash_query(goal, context, task_type)
+        if query_hash in self.cache:
+            self.logger.info("Cache hit for query.")
+            return self.cache[query_hash]
+
+        # Select models
         top_models = self._select_top_models(task_type, num_models=3)
         results = self._execute_in_parallel(top_models, goal, context)
 
+        # Apply fallback if all models fail
         if not any(result["success"] for result in results):
             return self.fallback_strategy.refine_plan(goal, context, task_type)
 
+        # Merge or vote if multiple models succeed
         if sum(1 for result in results if result["success"]) > 1:
-            return self.voting_strategy.merge_or_vote(results)
+            merged_plan = self.voting_strategy.merge_or_vote(results)
+            self.cache[query_hash] = merged_plan
+            return merged_plan
 
+        # Evaluate and select the best result
         best_result = self.evaluation_strategy.evaluate(results, goal, task_type)
         self._update_model_profiles(best_result["model_name"], task_type, success=True)
+        self.cache[query_hash] = best_result["plan"]
         return best_result["plan"]
 
     def _select_top_models(self, task_type: Optional[str], num_models: int) -> List[str]:
@@ -79,7 +100,7 @@ class LLMRouter:
         results = []
         with ThreadPoolExecutor(max_workers=len(models)) as executor:
             future_to_model = {
-                executor.submit(self._get_model(model).execute, goal, context): model
+                executor.submit(self._get_model(model).generate_plan, goal, context): model
                 for model in models
             }
             for future in future_to_model:
