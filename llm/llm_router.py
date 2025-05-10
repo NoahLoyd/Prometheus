@@ -142,4 +142,4 @@ class LLMRouter:
         if success:
             self.task_profiles[key]["successes"] += 1
         else:
-            self.task_profiles[key]["failures"] += 1
+            self.task_profiles[key]["failures"] += 1 
