@@ -34,3 +34,4 @@ class NoteTool(BaseTool):
         except Exception as e:
             return f"Error reading notes: {e}"
             
+            
