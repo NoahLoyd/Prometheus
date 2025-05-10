@@ -11,4 +11,4 @@ class CalculatorTool(BaseTool):
             result = eval(query, allowed_names)
             return str(result)
         except Exception as e:
-            return f"Error: {e}"
+            return f"Error: {e}" 
