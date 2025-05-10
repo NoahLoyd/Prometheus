@@ -4,15 +4,19 @@ from .fallback_strategy import FallbackStrategy
 from .voting_strategy import VotingStrategy
 from .local_llm import LocalLLM
 from .base_llm import BaseLLM
+from .task_profiler import TaskProfiler
+from .confidence_scorer import ConfidenceScorer
+from .feedback_memory import FeedbackMemory
 from core.logging import Logging
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
-import time
 
 
 class LLMRouter:
     def __init__(self, config: Dict[str, Dict], evaluation_strategy: EvaluationStrategy,
-                 fallback_strategy: FallbackStrategy, voting_strategy: VotingStrategy):
+                 fallback_strategy: FallbackStrategy, voting_strategy: VotingStrategy,
+                 profiler: TaskProfiler, feedback_memory: FeedbackMemory,
+                 confidence_scorer: ConfidenceScorer):
         """
         Initialize the LLM Router with configurations and strategies.
 
@@ -20,16 +24,21 @@ class LLMRouter:
         :param evaluation_strategy: Strategy for model performance evaluation.
         :param fallback_strategy: Strategy for fallback in case of failures.
         :param voting_strategy: Strategy for merging or voting on model outputs.
+        :param profiler: Task Profiler for task classification.
+        :param feedback_memory: Feedback Memory system for storing task results.
+        :param confidence_scorer: Confidence Scorer for evaluating outputs.
         """
         self.config = config
         self.models: Dict[str, BaseLLM] = {}
         self.logger = Logging()
-        self.feedback_weights: Dict[Tuple[str, Optional[str]], float] = {}
         self.task_profiles: Dict[Tuple[str, Optional[str]], Dict[str, int]] = {}
         self.cache: Dict[str, List[Tuple[str, str]]] = {}
         self.evaluation_strategy = evaluation_strategy
         self.fallback_strategy = fallback_strategy
         self.voting_strategy = voting_strategy
+        self.profiler = profiler
+        self.feedback_memory = feedback_memory
+        self.confidence_scorer = confidence_scorer
 
     def _get_model(self, name: str) -> BaseLLM:
         """Retrieve or initialize a model by name."""
@@ -49,16 +58,19 @@ class LLMRouter:
         query_str = f"{goal}:{context}:{task_type}"
         return hashlib.sha256(query_str.encode()).hexdigest()
 
-    def generate_plan(self, goal: str, context: Optional[str] = None, task_type: Optional[str] = None) -> List[Tuple[str, str]]:
+    def generate_plan(self, goal: str, context: Optional[str] = None) -> List[Tuple[str, str]]:
         """
-        Generate a task execution plan based on the goal, context, and task type.
+        Generate a task execution plan based on the goal and context.
 
         :param goal: The primary task or objective.
         :param context: Additional context for the task.
-        :param task_type: The type of task (e.g., 'code', 'math').
         :return: A list of task execution plans.
         """
-        self.logger.info(f"Generating plan for goal: {goal} with task type: {task_type}")
+        self.logger.info(f"Generating plan for goal: {goal}")
+
+        # Classify task type using Task Profiler
+        task_type = self.profiler.classify_task(goal)
+        self.logger.info(f"Task type classified as: {task_type}")
 
         # Check cache
         query_hash = self._hash_query(goal, context, task_type)
@@ -70,19 +82,27 @@ class LLMRouter:
         top_models = self._select_top_models(task_type, num_models=3)
         results = self._execute_in_parallel(top_models, goal, context)
 
-        # Apply fallback if all models fail
-        if not any(result["success"] for result in results):
-            return self.fallback_strategy.refine_plan(goal, context, task_type)
+        # Evaluate confidence and apply fallback if necessary
+        confidences = [self.confidence_scorer.compute_confidence(result) for result in results]
+        if max(confidences, default=0) < 0.5:  # Threshold for fallback
+            self.logger.warning("Confidence below threshold. Applying fallback strategy.")
+            refined_plan = self.fallback_strategy.refine_plan(goal, context, task_type)
+            self.feedback_memory.record_feedback(task_type, "fallback", success=True, confidence=0.5)
+            return refined_plan
 
         # Merge or vote if multiple models succeed
-        if sum(1 for result in results if result["success"]) > 1:
-            merged_plan = self.voting_strategy.merge_or_vote(results)
+        successful_results = [results[i] for i in range(len(results)) if results[i]["success"]]
+        if len(successful_results) > 1:
+            merged_plan = self.voting_strategy.merge_or_vote(successful_results)
+            self.feedback_memory.record_feedback(task_type, "voted", success=True, confidence=max(confidences))
             self.cache[query_hash] = merged_plan
             return merged_plan
 
         # Evaluate and select the best result
         best_result = self.evaluation_strategy.evaluate(results, goal, task_type)
         self._update_model_profiles(best_result["model_name"], task_type, success=True)
+        self.feedback_memory.record_feedback(task_type, best_result["model_name"], success=True,
+                                             confidence=self.confidence_scorer.compute_confidence(best_result))
         self.cache[query_hash] = best_result["plan"]
         return best_result["plan"]
 
