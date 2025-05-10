@@ -1,27 +1,22 @@
-from typing import List, Tuple, Dict
-from core.logging import Logging
+from typing import List, Dict
 
 
-class PlanVotingStrategy:
-    def merge_or_vote(self, results: List[Dict]) -> List[Tuple[str, str]]:
-        ...
+class VotingStrategy:
+    """
+    Combines multiple successful outputs via majority voting or scoring.
+    """
 
+    def merge_or_vote(self, results: List[Dict]) -> List[Dict]:
+        """
+        Merge results or perform majority voting to select the best output.
 
-class FragmentVotingStrategy(PlanVotingStrategy):
-    def __init__(self, logger: Logging):
-        self.logger = logger
+        :param results: List of successful results.
+        :return: A merged or voted output plan.
+        """
+        successful_results = [result for result in results if result["success"]]
+        if not successful_results:
+            raise ValueError("No successful results to merge or vote on.")
 
-    def merge_or_vote(self, results: List[Dict]) -> List[Tuple[str, str]]:
-        successful_plans = [result["plan"] for result in results if result["success"]]
-
-        fragment_scores = {}
-        for plan in successful_plans:
-            for step in plan:
-                fragment_scores[step] = fragment_scores.get(step, 0) + 1
-
-        for fragment, score in fragment_scores.items():
-            historical_score = self.logger.get_fragment_success_rate(fragment)
-            fragment_scores[fragment] += historical_score
-
-        merged_plan = sorted(fragment_scores.keys(), key=lambda step: fragment_scores[step], reverse=True)
-        return merged_plan
+        # Simple majority voting example
+        plans = [result["plan"] for result in successful_results]
+        return max(set(plans), key=plans.count)  # Return the most common plan
