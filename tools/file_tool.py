@@ -30,6 +30,6 @@ class FileTool(BaseTool):
                 file.write(content)
             return f"File '{filename}' written successfully."
         except Exception as e:
-            return f"Error writing to file: {e}"
+            return f"Error writing to file: {e}" 
             
             
