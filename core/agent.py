@@ -1,6 +1,6 @@
 # core/agent.py
 
-from tools import ToolManager
+from tools.tool_manager import ToolManager
 
 class PrometheusAgent:
     def __init__(self, tools=None):
