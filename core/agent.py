@@ -22,12 +22,9 @@ class PrometheusAgent:
 
     def run(self, command: str) -> str:
         """
-        Handle commands like 'tool_name: input'.
+        Handle commands like 'tool_name: save: message'.
         """
-        if ":" not in command:
-            return "Invalid command format. Use 'tool_name: input'."
-
-        parts = command.split(":", 1)
+        parts = command.split(":", 1)  # Only split at the first colon
         if len(parts) != 2 or not parts[0].strip():
             return "Invalid command format. Tool name cannot be empty."
 
