@@ -56,39 +56,42 @@ class CommandRouter:
         return ""
 
     def _parse_file_command(self, command):
-        action = "read"
-        filename = "default.txt"
-        content = ""
-
-        if "write" in command:
-            action = "write"
-            try:
-                match = re.search(r"to ([\w\-\.]+\.txt)", command)
-                if match:
-                    filename = match.group(1)
-
-                content_match = re.search(r"saying (.+?) to", command)
-                if content_match:
-                    content = content_match.group(1).strip()
-                else:
-                    content = "No content provided."
-            except Exception as e:
-                content = f"Error parsing content: {str(e)}"
-
-        elif "read" in command:
+        try:
             action = "read"
-            try:
-                match = re.search(r"file ([\w\-\.]+\.txt)", command)
-                if match:
-                    filename = match.group(1)
-            except:
-                filename = "default.txt"
+            filename = "default.txt"
+            content = ""
 
-        elif "list" in command:
-            action = "list"
+            if "write" in command:
+                action = "write"
+                try:
+                    match = re.search(r"to ([\w\-\.]+\.txt)", command)
+                    if match:
+                        filename = match.group(1)
 
-        return {
-            "action": action,
-            "filename": filename,
-            "content": content
-        }
+                    content_match = re.search(r"saying (.+?) to", command)
+                    if content_match:
+                        content = content_match.group(1).strip()
+                    else:
+                        content = "No content provided."
+                except Exception as e:
+                    content = f"Error parsing content: {str(e)}"
+
+            elif "read" in command:
+                action = "read"
+                try:
+                    match = re.search(r"file ([\w\-\.]+\.txt)", command)
+                    if match:
+                        filename = match.group(1)
+                except:
+                    filename = "default.txt"
+
+            elif "list" in command:
+                action = "list"
+
+            return {
+                "action": action,
+                "filename": filename,
+                "content": content
+            }
+        except Exception as e:
+            return {"error": f"Error parsing file command: {str(e)}"}
