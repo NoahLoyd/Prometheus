@@ -10,8 +10,8 @@ class InternetTool(BaseTool):
     def run(self, query: str) -> str:
         api_key = os.getenv("SERPAPI_API_KEY")
         if not api_key:
-            return "Error: SERPAPI_API_KEY not set."
-
+            return "Error: SERPAPI_API_KEY not set. Please set it in your environment variables."
+        
         params = {"q": query, "api_key": api_key, "engine": "google"}
         try:
             response = requests.get("https://serpapi.com/search", params=params)
