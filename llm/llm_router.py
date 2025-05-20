@@ -1,22 +1,71 @@
 from typing import List, Tuple, Dict, Optional
-from llm.evaluation_strategy import EvaluationStrategy
-from llm.fallback_strategy import FallbackStrategy
-from llm.voting_strategy import VotingStrategy
-from llm.local_llm import LocalLLM
-from llm.base_llm import BaseLLM
-from llm.task_profiler import TaskProfiler
-from llm.confidence_scorer import ConfidenceScorer
-from llm.feedback_memory import FeedbackMemory
-from core.logging import Logging
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import logging
+
+# Attempt to import all required modules; provide safe fallbacks if needed
+try:
+    from llm.evaluation_strategy import EvaluationStrategy
+except ImportError as e:
+    logging.warning("Failed to import EvaluationStrategy: %s", e)
+    EvaluationStrategy = None
+
+try:
+    from llm.fallback_strategy import FallbackStrategy
+except ImportError as e:
+    logging.warning("Failed to import FallbackStrategy: %s", e)
+    FallbackStrategy = None
+
+try:
+    from llm.voting_strategy import VotingStrategy
+except ImportError as e:
+    logging.warning("Failed to import VotingStrategy: %s", e)
+    VotingStrategy = None
+
+try:
+    from llm.local_llm import LocalLLM
+except ImportError as e:
+    logging.warning("Failed to import LocalLLM: %s", e)
+    LocalLLM = None
+
+try:
+    from llm.base_llm import BaseLLM
+except ImportError as e:
+    logging.warning("Failed to import BaseLLM: %s", e)
+    BaseLLM = None
+
+try:
+    from llm.task_profiler import TaskProfiler
+except ImportError as e:
+    logging.warning("Failed to import TaskProfiler: %s", e)
+    TaskProfiler = None
+
+try:
+    from llm.confidence_scorer import ConfidenceScorer
+except ImportError as e:
+    logging.warning("Failed to import ConfidenceScorer: %s", e)
+    ConfidenceScorer = None
+
+try:
+    from llm.feedback_memory import FeedbackMemory
+except ImportError as e:
+    logging.warning("Failed to import FeedbackMemory: %s", e)
+    FeedbackMemory = None
+
+try:
+    from core.logging import Logging
+except ImportError as e:
+    logging.warning("Failed to import Logging: %s", e)
+    Logging = logging.getLogger(__name__)  # Fallback to default Python logging if Core Logging is unavailable
 
 
 class LLMRouter:
-    def __init__(self, config: Dict[str, Dict], evaluation_strategy: EvaluationStrategy,
-                 fallback_strategy: FallbackStrategy, voting_strategy: VotingStrategy,
-                 profiler: TaskProfiler, feedback_memory: FeedbackMemory,
-                 confidence_scorer: ConfidenceScorer):
+    def __init__(self, config: Dict[str, Dict], evaluation_strategy: Optional[EvaluationStrategy] = None,
+                 fallback_strategy: Optional[FallbackStrategy] = None,
+                 voting_strategy: Optional[VotingStrategy] = None,
+                 profiler: Optional[TaskProfiler] = None,
+                 feedback_memory: Optional[FeedbackMemory] = None,
+                 confidence_scorer: Optional[ConfidenceScorer] = None):
         """
         Initialize the LLM Router with configurations and strategies.
 
@@ -33,12 +82,12 @@ class LLMRouter:
         self.logger = Logging()
         self.task_profiles: Dict[Tuple[str, Optional[str]], Dict[str, int]] = {}
         self.cache: Dict[str, List[Tuple[str, str]]] = {}
-        self.evaluation_strategy = evaluation_strategy
-        self.fallback_strategy = fallback_strategy
-        self.voting_strategy = voting_strategy
-        self.profiler = profiler
-        self.feedback_memory = feedback_memory
-        self.confidence_scorer = confidence_scorer
+        self.evaluation_strategy = evaluation_strategy or EvaluationStrategy()
+        self.fallback_strategy = fallback_strategy or FallbackStrategy()
+        self.voting_strategy = voting_strategy or VotingStrategy()
+        self.profiler = profiler or TaskProfiler()
+        self.feedback_memory = feedback_memory or FeedbackMemory()
+        self.confidence_scorer = confidence_scorer or ConfidenceScorer()
 
     def _get_model(self, name: str) -> BaseLLM:
         """Retrieve or initialize a model by name."""
@@ -47,6 +96,8 @@ class LLMRouter:
             if not model_config:
                 raise ValueError(f"Model '{name}' is not configured.")
             if model_config["type"] == "local":
+                if not LocalLLM:
+                    raise ImportError("LocalLLM is not available.")
                 self.models[name] = LocalLLM(
                     model_path=model_config["path"],
                     device=model_config.get("device", "cpu")
@@ -69,7 +120,7 @@ class LLMRouter:
         self.logger.info(f"Generating plan for goal: {goal}")
 
         # Classify task type using Task Profiler
-        task_type = self.profiler.classify_task(goal)
+        task_type = self.profiler.classify_task(goal) if self.profiler else None
         self.logger.info(f"Task type classified as: {task_type}")
 
         # Check cache
@@ -83,28 +134,38 @@ class LLMRouter:
         results = self._execute_in_parallel(top_models, goal, context)
 
         # Evaluate confidence and apply fallback if necessary
-        confidences = [self.confidence_scorer.compute_confidence(result) for result in results]
+        confidences = [self.confidence_scorer.compute_confidence(result) for result in results if self.confidence_scorer]
         if max(confidences, default=0) < 0.5:  # Threshold for fallback
             self.logger.warning("Confidence below threshold. Applying fallback strategy.")
-            refined_plan = self.fallback_strategy.refine_plan(goal, context, task_type)
-            self.feedback_memory.record_feedback(task_type, "fallback", success=True, confidence=0.5)
+            refined_plan = self.fallback_strategy.refine_plan(goal, context, task_type) if self.fallback_strategy else []
+            if self.feedback_memory:
+                self.feedback_memory.record_feedback(task_type, "fallback", success=True, confidence=0.5)
             return refined_plan
 
         # Merge or vote if multiple models succeed
-        successful_results = [results[i] for i in range(len(results)) if results[i]["success"]]
-        if len(successful_results) > 1:
+        successful_results = [results[i] for i in range(len(results)) if results[i].get("success")]
+        if len(successful_results) > 1 and self.voting_strategy:
             merged_plan = self.voting_strategy.merge_or_vote(successful_results)
-            self.feedback_memory.record_feedback(task_type, "voted", success=True, confidence=max(confidences))
+            if self.feedback_memory:
+                self.feedback_memory.record_feedback(task_type, "voted", success=True, confidence=max(confidences))
             self.cache[query_hash] = merged_plan
             return merged_plan
 
         # Evaluate and select the best result
-        best_result = self.evaluation_strategy.evaluate(results, goal, task_type)
-        self._update_model_profiles(best_result["model_name"], task_type, success=True)
-        self.feedback_memory.record_feedback(task_type, best_result["model_name"], success=True,
-                                             confidence=self.confidence_scorer.compute_confidence(best_result))
-        self.cache[query_hash] = best_result["plan"]
-        return best_result["plan"]
+        if self.evaluation_strategy:
+            best_result = self.evaluation_strategy.evaluate(results, goal, task_type)
+            self._update_model_profiles(best_result["model_name"], task_type, success=True)
+            if self.feedback_memory:
+                self.feedback_memory.record_feedback(
+                    task_type,
+                    best_result["model_name"],
+                    success=True,
+                    confidence=self.confidence_scorer.compute_confidence(best_result) if self.confidence_scorer else 0.0
+                )
+            self.cache[query_hash] = best_result["plan"]
+            return best_result["plan"]
+
+        return []
 
     def _select_top_models(self, task_type: Optional[str], num_models: int) -> List[str]:
         """Select the top-performing models for a given task type."""
