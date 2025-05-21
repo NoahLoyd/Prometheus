@@ -1,10 +1,9 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 class EvaluationStrategy:
     """
     Abstract base class for evaluating LLM outputs.
     """
-
     def evaluate(self, outputs: List[str], context: Optional[str] = None) -> int:
         """
         Evaluate a list of outputs and select the best one.
@@ -20,7 +19,6 @@ class DefaultEvaluationStrategy(EvaluationStrategy):
     Default implementation: selects the first output unless overridden.
     Accepts a logger for production use.
     """
-
     def __init__(self, logger: Any = None):
         self.logger = logger
 
@@ -31,5 +29,4 @@ class DefaultEvaluationStrategy(EvaluationStrategy):
             return -1
         if self.logger:
             self.logger.info(f"Evaluating {len(outputs)} outputs using DefaultEvaluationStrategy.")
-        # Placeholder: In production, replace with quality metric, voting, or confidence score
         return 0
