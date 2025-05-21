@@ -4,10 +4,8 @@ class FallbackStrategy:
     """
     Defines how to retry or adjust if no models succeed.
     """
-
-    def __init__(self, logger: Any = None, models: Optional[dict] = None):
+    def __init__(self, logger: Any = None):
         self.logger = logger
-        self.models = models if models is not None else {}
 
     def refine_plan(self, goal: str, context: Optional[str], task_type: Optional[str]) -> List[Tuple[str, str]]:
         """
@@ -29,18 +27,7 @@ class ChainOfThoughtFallbackStrategy(FallbackStrategy):
     Reflects on the original task and previous failures, decomposes the task,
     reconstructs a solution path, and proposes a smarter retry plan.
     """
-
     def fallback(self, task: str, attempts: List[str]) -> str:
-        """
-        Generate an intelligent, structured fallback plan using chain-of-thought reasoning.
-
-        Args:
-            task (str): The original task or objective to achieve.
-            attempts (List[str]): Descriptions of previous failed attempts or error messages.
-
-        Returns:
-            str: A coherent, multi-step fallback plan with reasoning and improved strategy.
-        """
         failure_analysis = self._analyze_failures(attempts)
         subgoals = self._break_down_task(task)
         solution_path = self._reconstruct_solution(subgoals, failure_analysis)
