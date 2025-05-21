@@ -1,35 +1,44 @@
 # tools/file_tool.py
-import os
+
 from tools.base_tool import BaseTool
+import os
 
 class FileTool(BaseTool):
-    def __init__(self):
-        super().__init__(name="file", description="Read and write files.")
+    name = "file"
+    description = "A tool to read and write files from disk. Use with caution."
 
     def run(self, query: str) -> str:
-        command, _, data = query.partition(":")
-        command = command.strip().lower()
-        if command == "read":
-            return self._read_file(data.strip())
-        elif command == "write":
-            filename, _, content = data.partition(":")
-            return self._write_file(filename.strip(), content.strip())
-        else:
-            return "Invalid command. Use 'read: filename' or 'write: filename: content'."
-
-    def _read_file(self, filename: str) -> str:
         try:
-            with open(filename, "r") as file:
-                return file.read()
+            q = query.strip().lower()
+            if q.startswith("read:"):
+                path = query[5:].strip()
+                if not os.path.isfile(path):
+                    return f"File not found: {path}"
+                with open(path, "r", encoding="utf-8") as f:
+                    return f.read()
+            elif q.startswith("write:"):
+                parts = query[6:].split(":", 1)
+                if len(parts) != 2:
+                    return "Write format: write: <path>: <content>"
+                path, content = parts[0].strip(), parts[1].strip()
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                return f"Written to {path}."
+            elif q.startswith("append:"):
+                parts = query[7:].split(":", 1)
+                if len(parts) != 2:
+                    return "Append format: append: <path>: <content>"
+                path, content = parts[0].strip(), parts[1].strip()
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(content)
+                return f"Appended to {path}."
+            elif q.startswith("delete:"):
+                path = query[7:].strip()
+                if not os.path.isfile(path):
+                    return f"File not found: {path}"
+                os.remove(path)
+                return f"Deleted {path}."
+            else:
+                return "Unknown file command. Use 'read: <path>', 'write: <path>: <content>', 'append: <path>: <content>', or 'delete: <path>'."
         except Exception as e:
-            return f"Error reading file: {e}"
-
-    def _write_file(self, filename: str, content: str) -> str:
-        try:
-            with open(filename, "w") as file:
-                file.write(content)
-            return f"File '{filename}' written successfully."
-        except Exception as e:
-            return f"Error writing to file: {e}" 
-            
-            
+            return f"FileTool error: {e}"
