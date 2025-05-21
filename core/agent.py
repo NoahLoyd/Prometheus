@@ -1,10 +1,15 @@
 # core/agent.py
 
+from typing import Optional, Sequence
 from tools.tool_manager import ToolManager
 
 class PrometheusAgent:
-    def __init__(self, tools=None):
-        self.tool_manager = ToolManager()
+    def __init__(
+        self,
+        tools: Optional[Sequence] = None,
+        tool_manager: Optional[ToolManager] = None
+    ):
+        self.tool_manager = tool_manager if tool_manager is not None else ToolManager()
 
         # Register core tools with explicit names
         if tools:
