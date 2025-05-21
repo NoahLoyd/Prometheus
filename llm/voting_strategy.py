@@ -4,7 +4,6 @@ class VotingStrategy:
     """
     Abstract base class for voting-based aggregation of LLM outputs.
     """
-
     def vote(self, outputs: List[str], context: Any = None) -> int:
         """
         Vote on a list of outputs to select the best one.
@@ -19,7 +18,6 @@ class PlanVotingStrategy(VotingStrategy):
     """
     Votes on outputs by majority/plurality (for plans).
     """
-
     def __init__(self, logger: Any = None):
         self.logger = logger
 
@@ -28,7 +26,6 @@ class PlanVotingStrategy(VotingStrategy):
             if self.logger:
                 self.logger.warning("No outputs to vote on.")
             return -1
-        # Placeholder: implement a real voting algorithm in production
         if self.logger:
             self.logger.info("PlanVotingStrategy selected the first output (stub).")
         return 0
@@ -37,7 +34,6 @@ class FragmentVotingStrategy(VotingStrategy):
     """
     Votes on outputs by fragments or sections (for fragmented outputs).
     """
-
     def __init__(self, logger: Any = None):
         self.logger = logger
 
@@ -46,7 +42,6 @@ class FragmentVotingStrategy(VotingStrategy):
             if self.logger:
                 self.logger.warning("No outputs to vote on.")
             return -1
-        # Placeholder: implement a fragment-based voting algorithm in production
         if self.logger:
             self.logger.info("FragmentVotingStrategy selected the first output (stub).")
         return 0
