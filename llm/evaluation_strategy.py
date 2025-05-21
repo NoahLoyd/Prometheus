@@ -1,24 +1,35 @@
-from typing import List, Dict, Optional
-
+from typing import Any, Dict, List, Optional
 
 class EvaluationStrategy:
     """
-    Compares multiple model outputs and chooses the best based on task success, coherence, and relevance.
+    Abstract base class for evaluating LLM outputs.
     """
 
-    def evaluate(self, results: List[Dict], goal: str, task_type: Optional[str]) -> Dict:
+    def evaluate(self, outputs: List[str], context: Optional[str] = None) -> int:
         """
-        Evaluate model outputs and select the best one.
+        Evaluate a list of outputs and select the best one.
 
-        :param results: List of model output results.
-        :param goal: The original goal or task.
-        :param task_type: The type of task (e.g., 'reasoning', 'coding').
-        :return: The best result dictionary.
+        :param outputs: List of outputs from different models.
+        :param context: Optional context for evaluation.
+        :return: Index of the best output.
         """
-        successful_results = [result for result in results if result["success"]]
-        if not successful_results:
-            raise ValueError("No successful results to evaluate.")
+        raise NotImplementedError("EvaluationStrategy.evaluate() must be implemented by subclasses.")
 
-        # Sort by relevance and coherence
-        sorted_results = sorted(successful_results, key=lambda r: r.get("relevance", 0) + r.get("coherence", 0), reverse=True)
-        return sorted_results[0]
+class DefaultEvaluationStrategy(EvaluationStrategy):
+    """
+    Default implementation: selects the first output unless overridden.
+    Accepts a logger for production use.
+    """
+
+    def __init__(self, logger: Any = None):
+        self.logger = logger
+
+    def evaluate(self, outputs: List[str], context: Optional[str] = None) -> int:
+        if not outputs:
+            if self.logger:
+                self.logger.warning("No outputs to evaluate.")
+            return -1
+        if self.logger:
+            self.logger.info(f"Evaluating {len(outputs)} outputs using DefaultEvaluationStrategy.")
+        # Placeholder: In production, replace with quality metric, voting, or confidence score
+        return 0
