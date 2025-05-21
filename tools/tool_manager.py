@@ -1,61 +1,37 @@
 # tools/tool_manager.py
 
-from typing import Dict, Optional, Any, Protocol, runtime_checkable
-
-@runtime_checkable
-class BaseTool(Protocol):
-    """
-    Protocol for all tools.
-    Each tool must have a `name` attribute (str) and a `run(query: str) -> Any` method.
-    """
-    name: str
-
-    def run(self, query: str) -> Any:
-        ...
-
+from typing import Dict, Any
+from tools.base_tool import BaseTool
 
 class ToolManager:
-    """
-    Manages tool registration and retrieval for modular AGI systems.
-    """
-
-    def __init__(self) -> None:
+    def __init__(self):
         self.tools: Dict[str, BaseTool] = {}
 
-    def register_tool(self, tool: BaseTool) -> None:
+    def register_tool(self, tool_instance: BaseTool):
         """
-        Registers a tool instance.
-        The tool is keyed by its lowercase name.
-        Raises TypeError if the tool does not implement BaseTool.
+        Registers a tool by its .name attribute (lowercased).
         """
-        if not isinstance(tool, BaseTool):
-            # Fallback for Protocol when used with isinstance. You may want to
-            # use abc.ABC for strict enforcement in production.
-            if not hasattr(tool, "name") or not callable(getattr(tool, "run", None)):
-                raise TypeError("Tool must implement 'name' (str) and 'run(query: str) -> Any'.")
-        if not isinstance(tool.name, str):
-            raise TypeError("Tool must have a string 'name' attribute.")
-        key = tool.name.lower()
-        self.tools[key] = tool
+        if not hasattr(tool_instance, 'name'):
+            raise ValueError("Tool instance must have a 'name' attribute.")
+        name = tool_instance.name.strip().lower()
+        self.tools[name] = tool_instance
 
-    def get_tool(self, name: str) -> Optional[BaseTool]:
+    def call_tool(self, name: str, query: str) -> str:
         """
-        Retrieves a tool by name (case-insensitive).
-        Returns None if tool is not found.
+        Calls the tool with the provided name and passes the query string.
         """
-        if not isinstance(name, str):
-            return None
-        return self.tools.get(name.lower(), None)
-
-    def call_tool(self, tool_name: str, query: str) -> Any:
-        """
-        Calls a registered tool's 'run' method with the given query.
-        Raises KeyError if the tool is not found.
-        """
-        tool = self.get_tool(tool_name)
-        if tool is None:
-            raise KeyError(f"Tool '{tool_name}' not found.")
+        name = name.strip().lower()
+        tool = self.tools.get(name)
+        if not tool:
+            # Optionally, support aliasing: e.g. map "calculate" to "calculator"
+            aliases = {"calculate": "calculator"}
+            actual_name = aliases.get(name)
+            if actual_name:
+                tool = self.tools.get(actual_name)
+        if not tool:
+            available = ', '.join(self.tools.keys())
+            return f"Tool '{name}' not found. Available tools: {available if available else 'none'}"
         try:
             return tool.run(query)
         except Exception as e:
-            raise RuntimeError(f"Error executing tool '{tool_name}': {e}") from e
+            return f"Error running tool '{name}': {e}"
