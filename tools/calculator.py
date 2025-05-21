@@ -1,14 +1,15 @@
 # tools/calculator.py
+
 from tools.base_tool import BaseTool
 
 class CalculatorTool(BaseTool):
-    def __init__(self):
-        super().__init__(name="calculator", description="Perform basic mathematical calculations.")
+    name = "calculator"
+    description = "A tool that performs basic arithmetic calculations."
 
     def run(self, query: str) -> str:
         try:
-            allowed_names = {"__builtins__": {}}  # Prevent unsafe code execution
-            result = eval(query, allowed_names)
+            # WARNING: eval is dangerous; only use with trusted input.
+            result = eval(query, {"__builtins__": {}})
             return str(result)
         except Exception as e:
-            return f"Error: {e}" 
+            return f"Calculator error: {e}"
