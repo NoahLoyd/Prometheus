@@ -4,7 +4,6 @@ class ConfidenceScorer:
     """
     Scores LLM outputs for confidence, ranking, or filtering.
     """
-
     def __init__(self, logger: Any = None):
         self.logger = logger
 
@@ -20,7 +19,6 @@ class ConfidenceScorer:
             if self.logger:
                 self.logger.warning("No outputs to score for confidence.")
             return []
-        # Placeholder: uniform confidence, replace with actual scoring logic
         scores = [1.0 for _ in outputs]
         if self.logger:
             self.logger.info(f"ConfidenceScorer assigned uniform scores: {scores}.")
