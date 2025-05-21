@@ -1,9 +1,18 @@
 # tools/base_tool.py
 
-class BaseTool:
-    def __init__(self, name="base_tool", description="A base tool with no functionality"):
-        self.name = name
-        self.description = description
+from abc import ABC, abstractmethod
 
+class BaseTool(ABC):
+    """
+    Abstract base class for all tools in Promethyn.
+    Each tool must have a unique string 'name' and implement run(query: str) -> str.
+    """
+
+    name: str
+
+    @abstractmethod
     def run(self, query: str) -> str:
-        raise NotImplementedError("Each tool must implement a run method.")
+        """
+        Processes the given query string and returns a string result.
+        """
+        pass
