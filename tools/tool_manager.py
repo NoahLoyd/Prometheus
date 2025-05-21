@@ -1,8 +1,8 @@
 # tools/tool_manager.py
 
-from typing import Dict, Optional, Any, Protocol
+from typing import Dict, Optional, Any, Protocol, runtime_checkable
 
-
+@runtime_checkable
 class BaseTool(Protocol):
     """
     Protocol for all tools.
