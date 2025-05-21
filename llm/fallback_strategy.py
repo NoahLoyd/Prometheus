@@ -1,9 +1,14 @@
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Any
 
 class FallbackStrategy:
     """
     Defines how to retry or adjust if no models succeed.
     """
+
+    def __init__(self, logger: Any = None, models: Optional[dict] = None):
+        self.logger = logger
+        self.models = models if models is not None else {}
+
     def refine_plan(self, goal: str, context: Optional[str], task_type: Optional[str]) -> List[Tuple[str, str]]:
         """
         Retry or adjust the plan if all models fail.
@@ -13,16 +18,16 @@ class FallbackStrategy:
         :param task_type: The type of task (e.g., 'reasoning', 'coding').
         :return: A refined plan as a list of (tool_name, query) steps.
         """
-        # Example fallback logic: adjust task constraints
         adjusted_goal = f"Refined goal: {goal}"
+        if self.logger:
+            self.logger.warning(f"FallbackStrategy: All models failed for goal: {goal}")
         return [("fallback_tool", adjusted_goal)]
 
 class ChainOfThoughtFallbackStrategy(FallbackStrategy):
     """
     Implements a chain-of-thought fallback strategy for AGI systems.
     Reflects on the original task and previous failures, decomposes the task,
-    reconstructs a solution path with reasoning, and proposes a smarter retry plan.
-    Structured for extensibility and production use in strategic AGI systems.
+    reconstructs a solution path, and proposes a smarter retry plan.
     """
 
     def fallback(self, task: str, attempts: List[str]) -> str:
@@ -36,38 +41,22 @@ class ChainOfThoughtFallbackStrategy(FallbackStrategy):
         Returns:
             str: A coherent, multi-step fallback plan with reasoning and improved strategy.
         """
-        # Step 1: Reflect on previous failures to extract insight
         failure_analysis = self._analyze_failures(attempts)
-
-        # Step 2: Decompose the original task into logical subgoals
         subgoals = self._break_down_task(task)
-
-        # Step 3: Reconstruct a new solution path based on insight and subgoals
         solution_path = self._reconstruct_solution(subgoals, failure_analysis)
-
-        # Step 4: Suggest a new, improved action plan
         improved_action = self._suggest_improved_action(task, solution_path, failure_analysis)
 
-        # Compose the complete fallback plan as a coherent, stepwise explanation
         plan = []
         plan.append(f"Step 1: Analyze failure reason\n{failure_analysis}")
         plan.append(f"Step 2: Break down task into subgoals\n{subgoals}")
         plan.append(f"Step 3: Reconstruct solution path\n{solution_path}")
         plan.append(f"Step 4: Attempt improved action\n{improved_action}")
 
+        if self.logger:
+            self.logger.info("ChainOfThoughtFallbackStrategy generated a fallback plan.")
         return "\n\n".join(plan)
 
     def _analyze_failures(self, attempts: List[str]) -> str:
-        """
-        Reflect on previous failures to extract key insights.
-        This allows strategic adaptation and is extendable for advanced error analysis.
-
-        Args:
-            attempts (List[str]): Past attempt descriptions or error messages.
-
-        Returns:
-            str: Summary of failure reasons and lessons learned.
-        """
         if not attempts:
             return "No previous attempts detected. Proceeding with initial breakdown."
         summary = "After reviewing previous failures:\n"
@@ -77,16 +66,6 @@ class ChainOfThoughtFallbackStrategy(FallbackStrategy):
         return summary
 
     def _break_down_task(self, task: str) -> str:
-        """
-        Decompose the original task into manageable, logical subgoals.
-
-        Args:
-            task (str): The original task.
-
-        Returns:
-            str: Outlined subgoals for the task.
-        """
-        # In production, this could use NLP-based decomposition or expert systems.
         subgoals = [
             "Clarify the objective and define precise success criteria.",
             "Enumerate all resources, dependencies, or preconditions required.",
@@ -97,16 +76,6 @@ class ChainOfThoughtFallbackStrategy(FallbackStrategy):
         return "\n".join(f"- {sg}" for sg in subgoals)
 
     def _reconstruct_solution(self, subgoals: str, failure_analysis: str) -> str:
-        """
-        Rebuild a solution path using new insights and subgoals.
-
-        Args:
-            subgoals (str): The list of subgoals for the task.
-            failure_analysis (str): Insights from previous failures.
-
-        Returns:
-            str: A reconstructed, logically ordered plan.
-        """
         return (
             "Integrate insights from failure analysis with the subgoals.\n"
             "For each subgoal:\n"
@@ -117,17 +86,6 @@ class ChainOfThoughtFallbackStrategy(FallbackStrategy):
         )
 
     def _suggest_improved_action(self, task: str, solution_path: str, failure_analysis: str) -> str:
-        """
-        Suggest a new, smarter approach for retrying the task.
-
-        Args:
-            task (str): The original task.
-            solution_path (str): The reconstructed solution steps.
-            failure_analysis (str): Insights from failures.
-
-        Returns:
-            str: A concise, actionable next-step plan.
-        """
         return (
             "Initiate a new attempt with the following protocol:\n"
             "- Implement the revised, stepwise plan using insights from failure analysis.\n"
@@ -135,19 +93,3 @@ class ChainOfThoughtFallbackStrategy(FallbackStrategy):
             "- Continuously monitor for new points of failure or deviation.\n"
             "- Adapt dynamically and document all results for compounding system intelligence."
         )
-
-if __name__ == "__main__":
-    # Manual test for ChainOfThoughtFallbackStrategy
-
-    # Sample task and failure list
-    sample_task = "Build a robust question-answering system using LLMs."
-    sample_failures = [
-        "Model timed out on long-context input.",
-        "Output was incoherent for multi-part questions.",
-        "Dependency error: missing tokenizer package."
-    ]
-
-    strategy = ChainOfThoughtFallbackStrategy()
-    result = strategy.fallback(sample_task, sample_failures)
-    print("Chain-of-Thought Fallback Output:\n")
-    print(result)
