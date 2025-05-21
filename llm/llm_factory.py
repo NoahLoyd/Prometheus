@@ -1,10 +1,9 @@
 from typing import Dict
-from .llm_router import LLMRouter
-from .evaluation_strategy import DefaultEvaluationStrategy
-from .fallback_strategy import ChainOfThoughtFallbackStrategy
-from .plan_voting_strategy import FragmentVotingStrategy
+from llm.llm_router import LLMRouter
+from llm.evaluation_strategy import DefaultEvaluationStrategy
+from llm.fallback_strategy import ChainOfThoughtFallbackStrategy
+from llm.voting_strategy import FragmentVotingStrategy
 from core.logging import Logging
-
 
 def build_llm_router(llm_config: Dict[str, Dict]) -> LLMRouter:
     """
@@ -17,7 +16,7 @@ def build_llm_router(llm_config: Dict[str, Dict]) -> LLMRouter:
 
     # Initialize strategies
     evaluation_strategy = DefaultEvaluationStrategy(logger)
-    fallback_strategy = ChainOfThoughtFallbackStrategy(logger, models={})  # Empty for now
+    fallback_strategy = ChainOfThoughtFallbackStrategy(logger, models={})  # Pass logger and models as needed
     voting_strategy = FragmentVotingStrategy(logger)
 
     # Build and return the LLMRouter
