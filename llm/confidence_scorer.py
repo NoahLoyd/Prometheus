@@ -1,17 +1,27 @@
-from typing import Dict
+from typing import List, Any
 
 class ConfidenceScorer:
     """
-    Evaluates the confidence of model outputs based on coherence, relevance, and success metrics.
+    Scores LLM outputs for confidence, ranking, or filtering.
     """
 
-    def compute_confidence(self, result: Dict) -> float:
+    def __init__(self, logger: Any = None):
+        self.logger = logger
+
+    def score(self, outputs: List[str], context: Any = None) -> List[float]:
         """
-        Compute confidence score for a model output.
-        :param result: Model output dictionary containing 'coherence', 'relevance', and 'success'.
-        :return: Confidence score (0 to 1).
+        Assigns a confidence score (0.0 - 1.0) to each output.
+
+        :param outputs: List of model outputs.
+        :param context: Optional context for scoring.
+        :return: List of confidence scores.
         """
-        coherence = result.get("coherence", 0)
-        relevance = result.get("relevance", 0)
-        success = 1 if result.get("success", False) else 0
-        return (0.5 * coherence + 0.4 * relevance + 0.1 * success)
+        if not outputs:
+            if self.logger:
+                self.logger.warning("No outputs to score for confidence.")
+            return []
+        # Placeholder: uniform confidence, replace with actual scoring logic
+        scores = [1.0 for _ in outputs]
+        if self.logger:
+            self.logger.info(f"ConfidenceScorer assigned uniform scores: {scores}.")
+        return scores
