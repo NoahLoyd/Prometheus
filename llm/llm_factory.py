@@ -14,12 +14,10 @@ def build_llm_router(llm_config: Dict[str, Dict]) -> LLMRouter:
     """
     logger = Logging()
 
-    # Initialize strategies
     evaluation_strategy = DefaultEvaluationStrategy(logger)
-    fallback_strategy = ChainOfThoughtFallbackStrategy(logger, models={})  # Pass logger and models as needed
+    fallback_strategy = ChainOfThoughtFallbackStrategy(logger)
     voting_strategy = FragmentVotingStrategy(logger)
 
-    # Build and return the LLMRouter
     return LLMRouter(
         config=llm_config,
         evaluation_strategy=evaluation_strategy,
