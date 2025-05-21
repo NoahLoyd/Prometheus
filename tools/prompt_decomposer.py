@@ -1,109 +1,76 @@
-# tools/prompt_decomposer.py
-
 from typing import Dict, Any
-import json
 
 class PromptDecomposer:
     """
-    Decomposes natural language prompts into actionable coding plans using a local or placeholder LLM.
-    The LLM call is modular and can be swapped for a production LLM later.
+    Decomposes natural language prompts into actionable coding plans.
     """
-
-    def __init__(self):
-        # Placeholder for LLM router or API. Replace with your real LLM connection.
-        self.llm_router = self._default_llm_router
 
     def decompose(self, prompt: str) -> Dict[str, Any]:
         """
         Given a prompt, returns a structured plan dictionary.
-        Validates LLM output and falls back to a safe default plan as needed.
+        This is a basic rule-based implementation; can be replaced with LLM logic.
         """
-        plan = self._call_llm(prompt)
-        validated_plan = self._validate_and_fallback(plan, prompt)
-        return validated_plan
+        # Very basic logic for demo; extend with NLP/LLM for advanced AGI use.
+        plan = {}
 
-    def _call_llm(self, prompt: str) -> Dict[str, Any]:
-        """
-        Call to a local or remote LLM to generate a structured build plan.
-        Returns a dict with keys: file, class, code, test.
-        """
-        try:
-            # Placeholder logic: simulate an LLM response with JSON string.
-            # Replace this block with an actual LLM call, e.g., self.llm_router.generate(...)
-            simulated_llm_output = self.llm_router(prompt)
-            if isinstance(simulated_llm_output, dict):
-                return simulated_llm_output
-            # try to parse JSON if returned as string
-            return json.loads(simulated_llm_output)
-        except Exception:
-            return {}
-
-    def _validate_and_fallback(self, plan: Dict[str, Any], prompt: str) -> Dict[str, Any]:
-        """
-        Ensures the plan contains required keys and valid values.
-        Falls back to a simple safe plan if LLM output is missing or invalid.
-        """
-        required_keys = {"file", "class", "code", "test"}
-        if not (isinstance(plan, dict) and required_keys.issubset(plan) and all(plan.get(k) for k in required_keys)):
-            # Fallback: very basic plan
-            return {
+        prompt = prompt.strip().lower()
+        if "track time" in prompt or "time spent" in prompt:
+            plan = {
+                "file": "tools/time_tracker.py",
+                "class": "TimeTrackerTool",
+                "code": (
+                    "from tools.base_tool import BaseTool\n"
+                    "import time\n\n"
+                    "class TimeTrackerTool(BaseTool):\n"
+                    "    name = 'time_tracker'\n"
+                    "    description = 'Tracks time spent on tasks.'\n\n"
+                    "    def __init__(self):\n"
+                    "        self.tasks = {}\n"
+                    "        self.active_task = None\n"
+                    "        self.start_time = None\n\n"
+                    "    def run(self, query: str) -> str:\n"
+                    "        cmd = query.strip().lower()\n"
+                    "        if cmd.startswith('start:'):\n"
+                    "            task = cmd[len('start:'):].strip()\n"
+                    "            if self.active_task:\n"
+                    "                return f'Already tracking {self.active_task}'\n"
+                    "            self.active_task = task\n"
+                    "            self.start_time = time.time()\n"
+                    "            return f'Started tracking {task}'\n"
+                    "        elif cmd == 'stop':\n"
+                    "            if not self.active_task:\n"
+                    "                return 'No active task.'\n"
+                    "            elapsed = time.time() - self.start_time\n"
+                    "            self.tasks[self.active_task] = self.tasks.get(self.active_task, 0) + elapsed\n"
+                    "            msg = f'Stopped {self.active_task}. Time: {elapsed:.2f} seconds.'\n"
+                    "            self.active_task = None\n"
+                    "            self.start_time = None\n"
+                    "            return msg\n"
+                    "        elif cmd == 'report':\n"
+                    "            if not self.tasks:\n"
+                    "                return 'No tasks tracked.'\n"
+                    "            return '\\n'.join(f'{t}: {s:.2f} sec' for t, s in self.tasks.items())\n"
+                    "        else:\n"
+                    "            return 'Commands: start:<task>, stop, report.'\n"
+                ),
+                "test": (
+                    "from tools.time_tracker import TimeTrackerTool\n"
+                    "tt = TimeTrackerTool()\n"
+                    "print(tt.run('start: coding'))\n"
+                    "import time; time.sleep(1)\n"
+                    "print(tt.run('stop'))\n"
+                    "print(tt.run('report'))\n"
+                )
+            }
+        else:
+            plan = {
                 "file": "tools/undefined_module.py",
                 "class": "UndefinedModule",
                 "code": (
-                    "# Auto-generated placeholder due to LLM error or incomplete output.\n"
+                    "# Placeholder for undefined module\n"
                     "class UndefinedModule:\n"
-                    "    def run(self, query: str) -> str:\n"
-                    "        return 'No implementation. Prompt was: %s'\n" % prompt
+                    "    pass\n"
                 ),
-                "test": (
-                    "from tools.undefined_module import UndefinedModule\n"
-                    "mod = UndefinedModule()\n"
-                    "print(mod.run('test'))\n"
-                )
+                "test": "print('No test defined.')"
             }
         return plan
-
-    def _default_llm_router(self, prompt: str) -> Dict[str, Any]:
-        """
-        Placeholder LLM router.
-        Returns a hardcoded plan for demonstration; replace this with real LLM inference.
-        """
-        # Example: if prompt contains "timer", create a timer tool; otherwise return empty
-        if "timer" in prompt.lower():
-            code = (
-                "from tools.base_tool import BaseTool\n"
-                "import time\n\n"
-                "class TimerTool(BaseTool):\n"
-                "    name = 'timer'\n"
-                "    description = 'Simple timer tool.'\n"
-                "    def __init__(self):\n"
-                "        self.start = None\n"
-                "    def run(self, query: str) -> str:\n"
-                "        q = query.strip().lower()\n"
-                "        if q == 'start':\n"
-                "            self.start = time.time()\n"
-                "            return 'Timer started.'\n"
-                "        elif q == 'stop':\n"
-                "            if self.start is None:\n"
-                "                return 'Timer not started.'\n"
-                "            elapsed = time.time() - self.start\n"
-                "            self.start = None\n"
-                "            return f'Timer stopped: {elapsed:.2f} sec.'\n"
-                "        else:\n"
-                "            return 'Commands: start, stop.'\n"
-            )
-            test_code = (
-                "from tools.timer import TimerTool\n"
-                "timer = TimerTool()\n"
-                "print(timer.run('start'))\n"
-                "import time; time.sleep(1)\n"
-                "print(timer.run('stop'))\n"
-            )
-            return {
-                "file": "tools/timer.py",
-                "class": "TimerTool",
-                "code": code,
-                "test": test_code
-            }
-        # Else, return empty to trigger fallback
-        return {}
