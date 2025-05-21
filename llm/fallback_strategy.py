@@ -1,11 +1,28 @@
-from typing import List
+from typing import Optional, List, Tuple
+
+class FallbackStrategy:
+    """
+    Defines how to retry or adjust if no models succeed.
+    """
+    def refine_plan(self, goal: str, context: Optional[str], task_type: Optional[str]) -> List[Tuple[str, str]]:
+        """
+        Retry or adjust the plan if all models fail.
+
+        :param goal: The original goal or task.
+        :param context: Additional context for the task.
+        :param task_type: The type of task (e.g., 'reasoning', 'coding').
+        :return: A refined plan as a list of (tool_name, query) steps.
+        """
+        # Example fallback logic: adjust task constraints
+        adjusted_goal = f"Refined goal: {goal}"
+        return [("fallback_tool", adjusted_goal)]
 
 class ChainOfThoughtFallbackStrategy(FallbackStrategy):
     """
     Implements a chain-of-thought fallback strategy for AGI systems.
-    This approach reflects on failures, decomposes the original task,
-    and formulates a smarter, stepwise retry plan using explicit reasoning.
-    Designed for high-performance AGI planning and extendable for future logic.
+    Reflects on the original task and previous failures, decomposes the task,
+    reconstructs a solution path with reasoning, and proposes a smarter retry plan.
+    Structured for extensibility and production use in strategic AGI systems.
     """
 
     def fallback(self, task: str, attempts: List[str]) -> str:
@@ -43,7 +60,7 @@ class ChainOfThoughtFallbackStrategy(FallbackStrategy):
     def _analyze_failures(self, attempts: List[str]) -> str:
         """
         Reflect on previous failures to extract key insights.
-        This can be extended for advanced error analysis modules.
+        This allows strategic adaptation and is extendable for advanced error analysis.
 
         Args:
             attempts (List[str]): Past attempt descriptions or error messages.
@@ -69,12 +86,13 @@ class ChainOfThoughtFallbackStrategy(FallbackStrategy):
         Returns:
             str: Outlined subgoals for the task.
         """
-        # Placeholder logic for demo; in production, use NLP or task analysis modules
+        # In production, this could use NLP-based decomposition or expert systems.
         subgoals = [
-            "Clarify the objective and success criteria.",
-            "List required resources or dependencies.",
-            "Outline sequential sub-tasks or decision points.",
-            "Identify potential bottlenecks or complex steps."
+            "Clarify the objective and define precise success criteria.",
+            "Enumerate all resources, dependencies, or preconditions required.",
+            "Segment the task into atomic, sequential sub-tasks.",
+            "Anticipate potential bottlenecks or failure points.",
+            "Establish validation or monitoring at each key step."
         ]
         return "\n".join(f"- {sg}" for sg in subgoals)
 
@@ -90,11 +108,12 @@ class ChainOfThoughtFallbackStrategy(FallbackStrategy):
             str: A reconstructed, logically ordered plan.
         """
         return (
-            "Integrate insights from failure analysis with subgoals.\n"
+            "Integrate insights from failure analysis with the subgoals.\n"
             "For each subgoal:\n"
             "  - Apply lessons learned from past attempts.\n"
-            "  - Adjust resource allocation and sequencing if needed.\n"
-            "  - Validate each step before proceeding to the next."
+            "  - Adjust resource allocation, sequencing, or methods as needed.\n"
+            "  - Validate progress at each step before proceeding.\n"
+            "  - Document intermediate outcomes and anomalies for rapid feedback."
         )
 
     def _suggest_improved_action(self, task: str, solution_path: str, failure_analysis: str) -> str:
@@ -110,9 +129,9 @@ class ChainOfThoughtFallbackStrategy(FallbackStrategy):
             str: A concise, actionable next-step plan.
         """
         return (
-            "Initiate a new attempt with:\n"
-            "- Revised strategy based on failure analysis.\n"
-            "- Focused execution on the most problematic subgoals.\n"
-            "- Continuous self-monitoring and adaptability.\n"
-            "- Documenting results for rapid future learning."
+            "Initiate a new attempt with the following protocol:\n"
+            "- Implement the revised, stepwise plan using insights from failure analysis.\n"
+            "- Prioritize execution on subgoals that were most problematic previously.\n"
+            "- Continuously monitor for new points of failure or deviation.\n"
+            "- Adapt dynamically and document all results for compounding system intelligence."
         )
