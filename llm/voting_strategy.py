@@ -1,22 +1,52 @@
-from typing import List, Dict
-
+from typing import List, Any
 
 class VotingStrategy:
     """
-    Combines multiple successful outputs via majority voting or scoring.
+    Abstract base class for voting-based aggregation of LLM outputs.
     """
 
-    def merge_or_vote(self, results: List[Dict]) -> List[Dict]:
+    def vote(self, outputs: List[str], context: Any = None) -> int:
         """
-        Merge results or perform majority voting to select the best output.
+        Vote on a list of outputs to select the best one.
 
-        :param results: List of successful results.
-        :return: A merged or voted output plan.
+        :param outputs: List of outputs from different models.
+        :param context: Optional context for voting.
+        :return: Index of the selected output.
         """
-        successful_results = [result for result in results if result["success"]]
-        if not successful_results:
-            raise ValueError("No successful results to merge or vote on.")
+        raise NotImplementedError("VotingStrategy.vote() must be implemented by subclasses.")
 
-        # Simple majority voting example
-        plans = [result["plan"] for result in successful_results]
-        return max(set(plans), key=plans.count)  # Return the most common plan
+class PlanVotingStrategy(VotingStrategy):
+    """
+    Votes on outputs by majority/plurality (for plans).
+    """
+
+    def __init__(self, logger: Any = None):
+        self.logger = logger
+
+    def vote(self, outputs: List[str], context: Any = None) -> int:
+        if not outputs:
+            if self.logger:
+                self.logger.warning("No outputs to vote on.")
+            return -1
+        # Placeholder: implement a real voting algorithm in production
+        if self.logger:
+            self.logger.info("PlanVotingStrategy selected the first output (stub).")
+        return 0
+
+class FragmentVotingStrategy(VotingStrategy):
+    """
+    Votes on outputs by fragments or sections (for fragmented outputs).
+    """
+
+    def __init__(self, logger: Any = None):
+        self.logger = logger
+
+    def vote(self, outputs: List[str], context: Any = None) -> int:
+        if not outputs:
+            if self.logger:
+                self.logger.warning("No outputs to vote on.")
+            return -1
+        # Placeholder: implement a fragment-based voting algorithm in production
+        if self.logger:
+            self.logger.info("FragmentVotingStrategy selected the first output (stub).")
+        return 0
