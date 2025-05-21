@@ -7,6 +7,7 @@ from tools.prompt_decomposer import PromptDecomposer
 from tools.module_builder import ModuleBuilderTool
 from tools.base_tool import BaseTool
 from tools.tool_manager import ToolManager
+from addons.notebook import AddOnNotebook
 
 class SelfCodingEngine:
     """
@@ -15,11 +16,13 @@ class SelfCodingEngine:
       - Decomposes it into structured module plans.
       - Invokes ModuleBuilderTool to generate code files.
       - Optionally registers new tool modules into a ToolManager.
+      - Logs registration failures for strategic learning.
     """
 
-    def __init__(self):
+    def __init__(self, notebook: Optional[AddOnNotebook] = None):
         self.decomposer = PromptDecomposer()
         self.builder = ModuleBuilderTool()
+        self.notebook = notebook or AddOnNotebook()
 
     def process_prompt(
         self, 
@@ -55,6 +58,7 @@ class SelfCodingEngine:
         """
         Dynamically imports, instantiates, and registers a tool class from a generated module.
         Returns a dict with success status and error message if any.
+        Logs registration failures to AddOnNotebook if available.
         """
         try:
             file_path = plan.get("file")
@@ -62,6 +66,8 @@ class SelfCodingEngine:
             if not file_path or not class_name:
                 msg = "Missing 'file' or 'class' in plan."
                 print(f"[Tool Registration] {msg}")
+                if self.notebook:
+                    self.notebook.log("tool_registration_failure", {"plan": plan, "error": msg})
                 return {"success": False, "error": msg}
 
             # Convert file path to module path (e.g. tools/time_tracker.py -> tools.time_tracker)
@@ -76,18 +82,24 @@ class SelfCodingEngine:
             except Exception as imp_exc:
                 msg = f"Failed to import module '{module_path}': {imp_exc}"
                 print(f"[Tool Registration] {msg}")
+                if self.notebook:
+                    self.notebook.log("tool_registration_failure", {"plan": plan, "error": msg})
                 return {"success": False, "error": msg}
 
             tool_class = getattr(module, class_name, None)
             if tool_class is None:
                 msg = f"Class '{class_name}' not found in module '{module_path}'."
                 print(f"[Tool Registration] {msg}")
+                if self.notebook:
+                    self.notebook.log("tool_registration_failure", {"plan": plan, "error": msg})
                 return {"success": False, "error": msg}
 
             # Ensure the tool class inherits from BaseTool
             if not issubclass(tool_class, BaseTool):
                 msg = f"Class '{class_name}' does not inherit from BaseTool."
                 print(f"[Tool Registration] {msg}")
+                if self.notebook:
+                    self.notebook.log("tool_registration_failure", {"plan": plan, "error": msg})
                 return {"success": False, "error": msg}
 
             tool_instance = tool_class()
@@ -108,4 +120,6 @@ class SelfCodingEngine:
         except Exception as e:
             tb = traceback.format_exc()
             print(f"[Tool Registration] Exception: {e}\n{tb}")
+            if self.notebook:
+                self.notebook.log("tool_registration_failure", {"plan": plan, "error": str(e)})
             return {"success": False, "error": str(e), "traceback": tb}
