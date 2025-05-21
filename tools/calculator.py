@@ -8,7 +8,7 @@ class CalculatorTool(BaseTool):
 
     def run(self, query: str) -> str:
         try:
-            # WARNING: eval is dangerous; only use with trusted input.
+            # WARNING: 'eval' is unsafe, only use in trusted environments.
             result = eval(query, {"__builtins__": {}})
             return str(result)
         except Exception as e:
