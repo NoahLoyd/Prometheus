@@ -135,3 +135,19 @@ class ChainOfThoughtFallbackStrategy(FallbackStrategy):
             "- Continuously monitor for new points of failure or deviation.\n"
             "- Adapt dynamically and document all results for compounding system intelligence."
         )
+
+if __name__ == "__main__":
+    # Manual test for ChainOfThoughtFallbackStrategy
+
+    # Sample task and failure list
+    sample_task = "Build a robust question-answering system using LLMs."
+    sample_failures = [
+        "Model timed out on long-context input.",
+        "Output was incoherent for multi-part questions.",
+        "Dependency error: missing tokenizer package."
+    ]
+
+    strategy = ChainOfThoughtFallbackStrategy()
+    result = strategy.fallback(sample_task, sample_failures)
+    print("Chain-of-Thought Fallback Output:\n")
+    print(result)
