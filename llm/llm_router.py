@@ -1,208 +1,206 @@
-import json
-import traceback
-from typing import Any, Optional, Dict
+from typing import List, Tuple, Dict, Optional
+from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import logging
+
+# Attempt to import all required modules; provide safe fallbacks if needed
+try:
+    from llm.evaluation_strategy import EvaluationStrategy
+except ImportError as e:
+    logging.warning("Failed to import EvaluationStrategy: %s", e)
+    EvaluationStrategy = None
+
+try:
+    from llm.fallback_strategy import FallbackStrategy
+except ImportError as e:
+    logging.warning("Failed to import FallbackStrategy: %s", e)
+    FallbackStrategy = None
+
+try:
+    from llm.voting_strategy import VotingStrategy
+except ImportError as e:
+    logging.warning("Failed to import VotingStrategy: %s", e)
+    VotingStrategy = None
+
+try:
+    from llm.local_llm import LocalLLM
+except ImportError as e:
+    logging.warning("Failed to import LocalLLM: %s", e)
+    LocalLLM = None
+
+try:
+    from llm.base_llm import BaseLLM
+except ImportError as e:
+    logging.warning("Failed to import BaseLLM: %s", e)
+    BaseLLM = None
+
+try:
+    from llm.task_profiler import TaskProfiler
+except ImportError as e:
+    logging.warning("Failed to import TaskProfiler: %s", e)
+    TaskProfiler = None
+
+try:
+    from llm.confidence_scorer import ConfidenceScorer
+except ImportError as e:
+    logging.warning("Failed to import ConfidenceScorer: %s", e)
+    ConfidenceScorer = None
+
+try:
+    from llm.feedback_memory import FeedbackMemory
+except ImportError as e:
+    logging.warning("Failed to import FeedbackMemory: %s", e)
+    FeedbackMemory = None
+
+try:
+    from core.logging import Logging
+except ImportError as e:
+    logging.warning("Failed to import Logging: %s", e)
+    Logging = logging.getLogger(__name__)  # Fallback to default Python logging if Core Logging is unavailable
+
 
 class LLMRouter:
-    """
-    LLMRouter for Promethyn: future-ready, modular, and safe.
-    Routes prompt generation via simulated or local models,
-    and is easily extensible for real LLM backends.
-    """
-
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        # Accepts an optional config dictionary for customization
-        if config is None:
-            config = {}
-        self.model_name = config.get("model", "simulated-llm")  # Default model name
-        self.use_hf = config.get("use_hf", False)
-        self.hf_model_path = config.get("hf_model_path", None)
-        self._hf_model = None
-        self._hf_tokenizer = None
-        if self.use_hf and self.hf_model_path is not None:
-            try:
-                print("[LLMRouter] Initializing Hugging Face model...")
-                from transformers import AutoModelForCausalLM, AutoTokenizer
-                import torch
-                self._hf_tokenizer = AutoTokenizer.from_pretrained(self.hf_model_path)
-                self._hf_model = AutoModelForCausalLM.from_pretrained(self.hf_model_path)
-                self._hf_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-                self._hf_model = self._hf_model.to(self._hf_device)
-                print(f"[LLMRouter] Hugging Face model '{self.hf_model_path}' loaded on {self._hf_device}.")
-            except Exception as e:
-                print(f"[LLMRouter] Failed to initialize Hugging Face model: {e}")
-                print(traceback.format_exc())
-                self.use_hf = False  # Fallback to simulated
-
-    def generate(self, prompt: str, task_type: str = "code") -> str:
+    def __init__(self, config: Dict[str, Dict], evaluation_strategy: Optional[EvaluationStrategy] = None,
+                 fallback_strategy: Optional[FallbackStrategy] = None,
+                 voting_strategy: Optional[VotingStrategy] = None,
+                 profiler: Optional[TaskProfiler] = None,
+                 feedback_memory: Optional[FeedbackMemory] = None,
+                 confidence_scorer: Optional[ConfidenceScorer] = None):
         """
-        Generate code or text from prompt using the selected backend.
-        Returns a string (usually JSON for code tasks).
-        """
-        try:
-            if self.use_hf and self._hf_model is not None and self._hf_tokenizer is not None:
-                print(f"[LLMRouter] Generating response with Hugging Face model '{self.hf_model_path}'.")
-                response = self._generate_with_huggingface(prompt, task_type)
-                print("[LLMRouter] Generation success (Hugging Face).")
-                return response
-            else:
-                print(f"[LLMRouter] Generating response for task_type='{task_type}' using model '{self.model_name}' (simulated).")
-                response = self._simulate_llm(prompt, task_type)
-                print("[LLMRouter] Generation success (simulated).")
-                return response
-        except Exception as e:
-            print(f"[LLMRouter] Generation error: {e}")
-            print(traceback.format_exc())
-            fallback = self._fallback_response(prompt, task_type, error=e)
-            print("[LLMRouter] Fallback response returned.")
-            return fallback
+        Initialize the LLM Router with configurations and strategies.
 
-    def _generate_with_huggingface(self, prompt: str, task_type: str = "code") -> str:
+        :param config: Configuration for models (paths, types, devices).
+        :param evaluation_strategy: Strategy for model performance evaluation.
+        :param fallback_strategy: Strategy for fallback in case of failures.
+        :param voting_strategy: Strategy for merging or voting on model outputs.
+        :param profiler: Task Profiler for task classification.
+        :param feedback_memory: Feedback Memory system for storing task results.
+        :param confidence_scorer: Confidence Scorer for evaluating outputs.
         """
-        Generate a response using a local Hugging Face model.
-        Returns a JSON string containing 'file', 'class', 'code', and 'test'.
-        """
-        try:
-            from transformers import AutoModelForCausalLM, AutoTokenizer
-            import torch
+        self.config = config
+        self.models: Dict[str, BaseLLM] = {}
+        self.logger = Logging()
+        self.task_profiles: Dict[Tuple[str, Optional[str]], Dict[str, int]] = {}
+        self.cache: Dict[str, List[Tuple[str, str]]] = {}
+        self.evaluation_strategy = evaluation_strategy or EvaluationStrategy()
+        self.fallback_strategy = fallback_strategy or FallbackStrategy()
+        self.voting_strategy = voting_strategy or VotingStrategy()
+        self.profiler = profiler or TaskProfiler()
+        self.feedback_memory = feedback_memory or FeedbackMemory()
+        self.confidence_scorer = confidence_scorer or ConfidenceScorer()
 
-            # Build the input prompt for code generation
-            # You may want to engineer this prompt for better results
-            system_prompt = (
-                "Given the following user prompt, generate a Python module plan as a JSON object with keys "
-                "'file', 'class', 'code', and 'test'. "
-                "Only output the JSON object. Prompt: "
-            )
-            full_prompt = system_prompt + prompt + "\nJSON:"
-
-            # Tokenize and generate
-            inputs = self._hf_tokenizer(full_prompt, return_tensors="pt").to(self._hf_device)
-            with torch.no_grad():
-                generated_ids = self._hf_model.generate(
-                    **inputs,
-                    max_new_tokens=1024,
-                    pad_token_id=self._hf_tokenizer.eos_token_id,
-                    do_sample=False
+    def _get_model(self, name: str) -> BaseLLM:
+        """Retrieve or initialize a model by name."""
+        if name not in self.models:
+            model_config = self.config.get(name)
+            if not model_config:
+                raise ValueError(f"Model '{name}' is not configured.")
+            if model_config["type"] == "local":
+                if not LocalLLM:
+                    raise ImportError("LocalLLM is not available.")
+                self.models[name] = LocalLLM(
+                    model_path=model_config["path"],
+                    device=model_config.get("device", "cpu")
                 )
-            output = self._hf_tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+        return self.models[name]
 
-            # Find the JSON substring (extract between first "{" and last "}")
-            start = output.find('{')
-            end = output.rfind('}')
-            if start == -1 or end == -1 or end <= start:
-                raise ValueError("Could not find JSON object in model output.")
+    def _hash_query(self, goal: str, context: Optional[str], task_type: Optional[str]) -> str:
+        """Generate a unique hash for caching based on the query."""
+        query_str = f"{goal}:{context}:{task_type}"
+        return hashlib.sha256(query_str.encode()).hexdigest()
 
-            json_str = output[start:end+1]
-            # Validate and pretty-print JSON
-            plan = json.loads(json_str)
-            # Ensure all required keys exist
-            for key in ("file", "class", "code", "test"):
-                if key not in plan:
-                    raise ValueError(f"Missing key '{key}' in generated plan.")
-            return json.dumps(plan, indent=2)
-
-        except Exception as e:
-            print(f"[LLMRouter] Hugging Face generation failed: {e}")
-            print(traceback.format_exc())
-            # Fallback to simulation if Hugging Face fails
-            return self._simulate_llm(prompt, task_type)
-
-    def _simulate_llm(self, prompt: str, task_type: str = "code") -> str:
+    def generate_plan(self, goal: str, context: Optional[str] = None) -> List[Tuple[str, str]]:
         """
-        Simulate LLM output for local/dev use.
-        Returns a hardcoded JSON string for code, or a generic reply for text.
+        Generate a task execution plan based on the goal and context.
+
+        :param goal: The primary task or objective.
+        :param context: Additional context for the task.
+        :return: A list of task execution plans.
         """
-        if task_type == "code":
-            # Simulate a JSON code-generation response for tool creation
-            if "time track" in prompt.lower() or "track time" in prompt.lower():
-                code = (
-                    "from tools.base_tool import BaseTool\n"
-                    "import time\n\n"
-                    "class TimeTrackerTool(BaseTool):\n"
-                    "    name = 'time_tracker'\n"
-                    "    description = 'Tracks time spent on tasks.'\n"
-                    "    def __init__(self):\n"
-                    "        self.tasks = {}\n"
-                    "        self.active_task = None\n"
-                    "        self.start_time = None\n"
-                    "    def run(self, query: str) -> str:\n"
-                    "        cmd = query.strip().lower()\n"
-                    "        if cmd.startswith('start:'):\n"
-                    "            task = cmd[len('start:'):].strip()\n"
-                    "            if self.active_task:\n"
-                    "                return f'Already tracking {self.active_task}'\n"
-                    "            self.active_task = task\n"
-                    "            self.start_time = time.time()\n"
-                    "            return f'Started tracking {task}'\n"
-                    "        elif cmd == 'stop':\n"
-                    "            if not self.active_task:\n"
-                    "                return 'No active task.'\n"
-                    "            elapsed = time.time() - self.start_time\n"
-                    "            self.tasks[self.active_task] = self.tasks.get(self.active_task, 0) + elapsed\n"
-                    "            msg = f'Stopped {self.active_task}. Time: {elapsed:.2f} seconds.'\n"
-                    "            self.active_task = None\n"
-                    "            self.start_time = None\n"
-                    "            return msg\n"
-                    "        elif cmd == 'report':\n"
-                    "            if not self.tasks:\n"
-                    "                return 'No tasks tracked.'\n"
-                    "            return '\\n'.join(f'{t}: {s:.2f} sec' for t, s in self.tasks.items())\n"
-                    "        else:\n"
-                    "            return 'Commands: start:<task>, stop, report.'\n"
+        self.logger.info(f"Generating plan for goal: {goal}")
+
+        # Classify task type using Task Profiler
+        task_type = self.profiler.classify_task(goal) if self.profiler else None
+        self.logger.info(f"Task type classified as: {task_type}")
+
+        # Check cache
+        query_hash = self._hash_query(goal, context, task_type)
+        if query_hash in self.cache:
+            self.logger.info("Cache hit for query.")
+            return self.cache[query_hash]
+
+        # Select models
+        top_models = self._select_top_models(task_type, num_models=3)
+        results = self._execute_in_parallel(top_models, goal, context)
+
+        # Evaluate confidence and apply fallback if necessary
+        confidences = [self.confidence_scorer.compute_confidence(result) for result in results if self.confidence_scorer]
+        if max(confidences, default=0) < 0.5:  # Threshold for fallback
+            self.logger.warning("Confidence below threshold. Applying fallback strategy.")
+            refined_plan = self.fallback_strategy.refine_plan(goal, context, task_type) if self.fallback_strategy else []
+            if self.feedback_memory:
+                self.feedback_memory.record_feedback(task_type, "fallback", success=True, confidence=0.5)
+            return refined_plan
+
+        # Merge or vote if multiple models succeed
+        successful_results = [results[i] for i in range(len(results)) if results[i].get("success")]
+        if len(successful_results) > 1 and self.voting_strategy:
+            merged_plan = self.voting_strategy.merge_or_vote(successful_results)
+            if self.feedback_memory:
+                self.feedback_memory.record_feedback(task_type, "voted", success=True, confidence=max(confidences))
+            self.cache[query_hash] = merged_plan
+            return merged_plan
+
+        # Evaluate and select the best result
+        if self.evaluation_strategy:
+            best_result = self.evaluation_strategy.evaluate(results, goal, task_type)
+            self._update_model_profiles(best_result["model_name"], task_type, success=True)
+            if self.feedback_memory:
+                self.feedback_memory.record_feedback(
+                    task_type,
+                    best_result["model_name"],
+                    success=True,
+                    confidence=self.confidence_scorer.compute_confidence(best_result) if self.confidence_scorer else 0.0
                 )
-                test_code = (
-                    "from tools.time_tracker import TimeTrackerTool\n"
-                    "tt = TimeTrackerTool()\n"
-                    "print(tt.run('start: coding'))\n"
-                    "import time; time.sleep(1)\n"
-                    "print(tt.run('stop'))\n"
-                    "print(tt.run('report'))\n"
-                )
-                plan = {
-                    "file": "tools/time_tracker.py",
-                    "class": "TimeTrackerTool",
-                    "code": code,
-                    "test": test_code
-                }
-                return json.dumps(plan, indent=2)
-            else:
-                plan = {
-                    "file": "tools/undefined_module.py",
-                    "class": "UndefinedModule",
-                    "code": (
-                        "# Placeholder for undefined module\n"
-                        "class UndefinedModule:\n"
-                        "    def run(self, query: str) -> str:\n"
-                        "        return 'No implementation for: ' + query\n"
-                    ),
-                    "test": "print('No test defined for undefined module.')"
-                }
-                return json.dumps(plan, indent=2)
-        else:
-            return f"[Simulated LLM] Response for task '{task_type}' to prompt: {prompt}"
+            self.cache[query_hash] = best_result["plan"]
+            return best_result["plan"]
 
-    def _fallback_response(self, prompt: str, task_type: str, error: Any = None) -> str:
-        """
-        Return a safe fallback response (JSON for code; text for others) if generation fails.
-        """
-        msg = (
-            "[LLMRouter Fallback] Generation failed.\n"
-            f"Prompt: {prompt}\n"
-            f"Task Type: {task_type}\n"
-            f"Error: {str(error)}\n"
-            "Please retry or check system logs."
+        return []
+
+    def _select_top_models(self, task_type: Optional[str], num_models: int) -> List[str]:
+        """Select the top-performing models for a given task type."""
+        sorted_models = sorted(
+            self.task_profiles.items(),
+            key=lambda x: x[1].get(task_type, 0),
+            reverse=True
         )
-        if task_type == "code":
-            plan = {
-                "file": "tools/generation_failed.py",
-                "class": "GenerationFailed",
-                "code": (
-                    "# Generation failed for your request.\n"
-                    "class GenerationFailed:\n"
-                    "    def run(self, query: str) -> str:\n"
-                    "        return 'Tool generation failed. Please try again.'\n"
-                ),
-                "test": "# No test: generation failed."
+        return [model[0][0] for model in sorted_models[:num_models]]
+
+    def _execute_in_parallel(self, models: List[str], goal: str, context: Optional[str]) -> List[Dict]:
+        """Execute tasks concurrently across multiple models."""
+        results = []
+        with ThreadPoolExecutor(max_workers=len(models)) as executor:
+            future_to_model = {
+                executor.submit(self._get_model(model).generate_plan, goal, context): model
+                for model in models
             }
-            return json.dumps(plan, indent=2)
+            for future in future_to_model:
+                model_name = future_to_model[future]
+                try:
+                    result = future.result(timeout=30)
+                    result["model_name"] = model_name
+                    results.append(result)
+                except Exception as e:
+                    self.logger.error(f"Model {model_name} failed with error: {e}")
+                    results.append({"model_name": model_name, "success": False, "error": str(e)})
+        return results
+
+    def _update_model_profiles(self, model_name: str, task_type: Optional[str], success: bool):
+        """Update model performance profiles based on task outcomes."""
+        key = (model_name, task_type)
+        if key not in self.task_profiles:
+            self.task_profiles[key] = {"successes": 0, "failures": 0}
+        if success:
+            self.task_profiles[key]["successes"] += 1
         else:
-            return msg
+            self.task_profiles[key]["failures"] += 1
