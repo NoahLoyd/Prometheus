@@ -2,6 +2,7 @@ from typing import List, Tuple, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import logging
+import threading
 
 # Attempt to import all required modules; provide safe fallbacks if needed
 try:
@@ -92,6 +93,7 @@ class LLMRouter:
         self.logger = Logging()
         self.task_profiles: Dict[Tuple[str, Optional[str]], Dict[str, int]] = {}
         self.cache: Dict[str, List[Tuple[str, str]]] = {}
+        self.cache_lock = threading.Lock()  # Ensure thread-safe caching
         self.evaluation_strategy = evaluation_strategy or EvaluationStrategy()
         self.fallback_strategy = fallback_strategy or FallbackStrategy()
         self.voting_strategy = voting_strategy or VotingStrategy()
@@ -132,6 +134,13 @@ class LLMRouter:
                 )
         return self.models[name]
 
+    def _register_plugin_model(self, model_name: str, model_instance: BaseLLM):
+        """Dynamically register a plugin-style model."""
+        if not isinstance(model_instance, BaseLLM):
+            raise TypeError("Model instance must inherit from BaseLLM.")
+        self.models[model_name] = model_instance
+        self.logger.info(f"Plugin model '{model_name}' registered successfully.")
+
     def _hash_query(self, goal: str, context: Optional[str], task_type: Optional[str]) -> str:
         """Generate a unique hash for caching based on the query."""
         query_str = f"{goal}:{context}:{task_type}"
@@ -151,11 +160,12 @@ class LLMRouter:
         task_type = self.profiler.classify_task(goal) if self.profiler else None
         self.logger.info(f"Task type classified as: {task_type}")
 
-        # Check cache
+        # Check cache with thread safety
         query_hash = self._hash_query(goal, context, task_type)
-        if query_hash in self.cache:
-            self.logger.info("Cache hit for query.")
-            return self.cache[query_hash]
+        with self.cache_lock:
+            if query_hash in self.cache:
+                self.logger.info("Cache hit for query.")
+                return self.cache[query_hash]
 
         # Select models
         top_models = self._select_top_models(task_type, num_models=3)
@@ -176,7 +186,8 @@ class LLMRouter:
             merged_plan = self.voting_strategy.merge_or_vote(successful_results)
             if self.feedback_memory:
                 self.feedback_memory.record_feedback(task_type, "voted", success=True, confidence=max(confidences))
-            self.cache[query_hash] = merged_plan
+            with self.cache_lock:
+                self.cache[query_hash] = merged_plan
             return merged_plan
 
         # Evaluate and select the best result
@@ -190,7 +201,8 @@ class LLMRouter:
                     success=True,
                     confidence=self.confidence_scorer.compute_confidence(best_result) if self.confidence_scorer else 0.0
                 )
-            self.cache[query_hash] = best_result["plan"]
+            with self.cache_lock:
+                self.cache[query_hash] = best_result["plan"]
             return best_result["plan"]
 
         return []
@@ -238,7 +250,7 @@ class LLMRouter:
         device = hf_model["device"]
 
         try:
-            inputs = tokenizer(f"{goal}\n{context or ''}", return_tensors="pt").to(device)
+            inputs = tokenizer(f"{goal}\n{context or ''}", return_tensors="pt", truncation=True, max_length=512).to(device)
             with torch.no_grad():
                 outputs = model.generate(
                     inputs["input_ids"],
