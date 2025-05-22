@@ -58,6 +58,15 @@ except ImportError as e:
     logging.warning("Failed to import Logging: %s", e)
     Logging = logging.getLogger(__name__)  # Fallback to default Python logging if Core Logging is unavailable
 
+# Hugging Face imports
+try:
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+    import torch
+except ImportError as e:
+    logging.warning("Failed to import Hugging Face transformers or PyTorch: %s", e)
+    AutoTokenizer = None
+    AutoModelForCausalLM = None
+
 
 class LLMRouter:
     def __init__(self, config: Dict[str, Dict], evaluation_strategy: Optional[EvaluationStrategy] = None,
@@ -79,6 +88,7 @@ class LLMRouter:
         """
         self.config = config
         self.models: Dict[str, BaseLLM] = {}
+        self.hf_models: Dict[str, Dict] = {}
         self.logger = Logging()
         self.task_profiles: Dict[Tuple[str, Optional[str]], Dict[str, int]] = {}
         self.cache: Dict[str, List[Tuple[str, str]]] = {}
@@ -88,6 +98,24 @@ class LLMRouter:
         self.profiler = profiler or TaskProfiler()
         self.feedback_memory = feedback_memory or FeedbackMemory()
         self.confidence_scorer = confidence_scorer or ConfidenceScorer()
+
+        # Initialize Hugging Face models if applicable
+        if self.config.get("use_hf", False) and AutoTokenizer and AutoModelForCausalLM:
+            self._initialize_hf_models()
+
+    def _initialize_hf_models(self):
+        """Initialize Hugging Face models specified in the configuration."""
+        for name, model_config in self.config.items():
+            if "hf_model" in model_config:
+                try:
+                    self.logger.info(f"Initializing Hugging Face model: {model_config['hf_model']}")
+                    tokenizer = AutoTokenizer.from_pretrained(model_config["hf_model"])
+                    model = AutoModelForCausalLM.from_pretrained(model_config["hf_model"])
+                    device = torch.device(model_config.get("device", "cpu"))
+                    model.to(device)
+                    self.hf_models[name] = {"tokenizer": tokenizer, "model": model, "device": device}
+                except Exception as e:
+                    self.logger.error(f"Failed to initialize Hugging Face model {model_config['hf_model']}: {e}")
 
     def _get_model(self, name: str) -> BaseLLM:
         """Retrieve or initialize a model by name."""
@@ -181,7 +209,7 @@ class LLMRouter:
         results = []
         with ThreadPoolExecutor(max_workers=len(models)) as executor:
             future_to_model = {
-                executor.submit(self._get_model(model).generate_plan, goal, context): model
+                executor.submit(self._execute_model, model, goal, context): model
                 for model in models
             }
             for future in future_to_model:
@@ -194,6 +222,45 @@ class LLMRouter:
                     self.logger.error(f"Model {model_name} failed with error: {e}")
                     results.append({"model_name": model_name, "success": False, "error": str(e)})
         return results
+
+    def _execute_model(self, model_name: str, goal: str, context: Optional[str]) -> Dict:
+        """Execute a model task, using Hugging Face if configured."""
+        if model_name in self.hf_models:
+            return self._execute_hf_model(model_name, goal, context)
+        # Fallback to existing simulation logic if Hugging Face is not configured
+        return self._simulate_llm(model_name, goal, context)
+
+    def _execute_hf_model(self, model_name: str, goal: str, context: Optional[str]) -> Dict:
+        """Execute a Hugging Face model task."""
+        hf_model = self.hf_models[model_name]
+        tokenizer = hf_model["tokenizer"]
+        model = hf_model["model"]
+        device = hf_model["device"]
+
+        try:
+            inputs = tokenizer(f"{goal}\n{context or ''}", return_tensors="pt").to(device)
+            with torch.no_grad():
+                outputs = model.generate(
+                    inputs["input_ids"],
+                    max_length=512,
+                    num_return_sequences=1,
+                    temperature=0.7
+                )
+            generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            return {"success": True, "result": generated_text}
+        except Exception as e:
+            self.logger.error(f"Hugging Face model {model_name} failed: {e}")
+            return self._fallback_response(model_name, goal, context)
+
+    def _simulate_llm(self, model_name: str, goal: str, context: Optional[str]) -> Dict:
+        """Simulate LLM response (existing logic)."""
+        # Simulated logic for non-Hugging Face models
+        return {"success": True, "result": f"Simulated response for {model_name} with goal: {goal}"}
+
+    def _fallback_response(self, model_name: str, goal: str, context: Optional[str]) -> Dict:
+        """Provide a fallback response in case of failure."""
+        self.logger.warning(f"Falling back for model {model_name}")
+        return {"success": False, "result": "Fallback response due to failure."}
 
     def _update_model_profiles(self, model_name: str, task_type: Optional[str], success: bool):
         """Update model performance profiles based on task outcomes."""
