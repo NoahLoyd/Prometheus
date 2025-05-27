@@ -2,6 +2,20 @@ import json
 from typing import Dict, Any
 from llm.llm_router import LLMRouter
 
+# Promethyn elite standards context for tool/code generation
+STANDARD_CONTEXT = (
+    "You are Promethyn's code generator. Enforce these elite standards at all times:\n"
+    "- All tools must follow the BaseTool interface and Promethyn modular architecture.\n"
+    "- Every tool must include production-grade docstrings, robust and safe fallback logic, and corresponding tests.\n"
+    "- Never overwrite existing files unless explicitly allowed by the user.\n"
+    "- After generation, validate tools using tool.run('test').\n"
+    "- Log any validation failures to AddOnNotebook if available.\n"
+    "- Always implement overwrite protection using os.path.exists().\n"
+    "- Write clean, modular, future-proof Python 3.11+ code.\n"
+    "- Never remove or break existing logic—only enhance and extend safely.\n"
+    "- The goal is to make Promethyn code better than any human or team. Do not settle.\n"
+)
+
 class PromptDecomposer:
     """
     Decomposes natural language prompts into actionable coding plans using a local or placeholder LLM.
@@ -25,9 +39,11 @@ class PromptDecomposer:
         """
         Call to LLMRouter to generate a structured build plan.
         Returns a dict with keys: file, class, code, test.
+        Prepends STANDARD_CONTEXT to every prompt to enforce elite standards.
         """
         try:
-            response = self.llm.generate(prompt, task_type="code")
+            full_prompt = f"{STANDARD_CONTEXT}\n{prompt}"
+            response = self.llm.generate(full_prompt, task_type="code")
             plan = json.loads(response)
             if not isinstance(plan, dict):
                 print("[PromptDecomposer] LLMRouter returned non-dict JSON. Falling back.")
