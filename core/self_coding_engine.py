@@ -436,3 +436,95 @@ class SelfCodingEngine:
         TODO: Implement multi-phase build/execution logic for complex agentic projects.
         """
         return plan
+class MathEvaluator:
+    """
+    MathEvaluator
+    -------------
+    Validator for Promethyn AGI that ensures generated tool code:
+      - Handles mathematical reasoning or evaluation safely and accurately.
+      - Detects unsafe or inappropriate math operations (e.g., direct use of `eval`).
+      - Checks for presence of core math operations if the plan or code suggests math intent.
+    Usage:
+        validator = MathEvaluator()
+        result = validator(plan, tool_code, test_code)
+    """
+
+    SAFE_MATH_KEYWORDS = [
+        "+", "-", "*", "/", "//", "%", "**", "math.", "abs(", "round(", "sum(", "min(", "max("
+    ]
+    UNSAFE_MATH_PATTERNS = [
+        "eval(", "exec(", "import os", "import subprocess"
+    ]
+
+    def __call__(self, plan: dict, tool_code: str, test_code: str) -> dict:
+        """
+        Validates the tool code for safe and correct mathematical reasoning.
+        Returns:
+            dict: { 'success': bool, 'error': Optional[str] }
+        """
+        errors = []
+
+        # 1. Detect unsafe math patterns (e.g., eval, exec)
+        for unsafe in self.UNSAFE_MATH_PATTERNS:
+            if unsafe in (tool_code or ""):
+                errors.append(f"Unsafe math operation detected: '{unsafe}'")
+
+        # 2. If the plan or code mentions math, check for at least one math operation
+        plan_str = str(plan).lower()
+        code_str = (tool_code or "").lower()
+        math_intent = any(word in plan_str for word in ["math", "arithmetic", "calculate", "sum", "multiply", "divide", "add", "subtract"])
+        if math_intent:
+            if not any(keyword in code_str for keyword in self.SAFE_MATH_KEYWORDS):
+                errors.append("Math intent detected in plan, but no safe math operations found in code.")
+
+        # 3. Optionally: check for prohibited direct user input to math functions
+        if "input(" in code_str and ("eval(" in code_str or any(op in code_str for op in ["+", "-", "*", "/", "%", "**"])):
+            errors.append("Direct user input used in math operation; consider sanitizing input.")
+
+        return {
+            "success": len(errors) == 0,
+            "error": "; ".join(errors) if errors else None
+        }
+
+
+class PlanVerifier:
+    """
+    PlanVerifier
+    -------------
+    Validator for Promethyn AGI that ensures:
+      - The tool code structure matches the provided plan.
+      - Required class name and methods (e.g., 'run') are implemented as specified.
+      - Detects structural mismatches between plan and implementation.
+    Usage:
+        validator = PlanVerifier()
+        result = validator(plan, tool_code, test_code)
+    """
+
+    def __call__(self, plan: dict, tool_code: str, test_code: str) -> dict:
+        """
+        Validates that the code matches the plan structure.
+        Returns:
+            dict: { 'success': bool, 'error': Optional[str] }
+        """
+        errors = []
+        plan_class = plan.get("class")
+        plan_methods = plan.get("methods", ["run"])
+
+        # 1. Check if the class is implemented in code
+        if plan_class and f"class {plan_class}" not in (tool_code or ""):
+            errors.append(f"Class '{plan_class}' not found in tool code.")
+
+        # 2. Check for each required method in the class (default: 'run')
+        for method in plan_methods:
+            method_signature = f"def {method}("
+            if method_signature not in (tool_code or ""):
+                errors.append(f"Required method '{method}' not found in tool code.")
+
+        # 3. Check that test code exists if expected
+        if not test_code or (not ("def test" in test_code or "class Test" in test_code)):
+            errors.append("Test code missing or does not define a test function/class.")
+
+        return {
+            "success": len(errors) == 0,
+            "error": "; ".join(errors) if errors else None
+        }
