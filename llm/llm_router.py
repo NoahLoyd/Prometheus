@@ -70,12 +70,12 @@ except ImportError as e:
 
 
 class LLMRouter:
-    def __init__(self, config: Dict[str, Dict], evaluation_strategy: Optional[EvaluationStrategy] = None,
-                 fallback_strategy: Optional[FallbackStrategy] = None,
-                 voting_strategy: Optional[VotingStrategy] = None,
-                 profiler: Optional[TaskProfiler] = None,
-                 feedback_memory: Optional[FeedbackMemory] = None,
-                 confidence_scorer: Optional[ConfidenceScorer] = None):
+    def __init__(self, config: Dict[str, Dict], evaluation_strategy: Optional['EvaluationStrategy'] = None,
+                 fallback_strategy: Optional['FallbackStrategy'] = None,
+                 voting_strategy: Optional['VotingStrategy'] = None,
+                 profiler: Optional['TaskProfiler'] = None,
+                 feedback_memory: Optional['FeedbackMemory'] = None,
+                 confidence_scorer: Optional['ConfidenceScorer'] = None):
         """
         Initialize the LLM Router with configurations and strategies.
 
@@ -94,12 +94,12 @@ class LLMRouter:
         self.task_profiles: Dict[Tuple[str, Optional[str]], Dict[str, int]] = {}
         self.cache: Dict[str, List[Tuple[str, str]]] = {}
         self.cache_lock = threading.Lock()  # Ensure thread-safe caching
-        self.evaluation_strategy = evaluation_strategy or EvaluationStrategy()
-        self.fallback_strategy = fallback_strategy or FallbackStrategy()
-        self.voting_strategy = voting_strategy or VotingStrategy()
-        self.profiler = profiler or TaskProfiler()
-        self.feedback_memory = feedback_memory or FeedbackMemory()
-        self.confidence_scorer = confidence_scorer or ConfidenceScorer()
+        self.evaluation_strategy = evaluation_strategy or (EvaluationStrategy() if EvaluationStrategy else None)
+        self.fallback_strategy = fallback_strategy or (FallbackStrategy() if FallbackStrategy else None)
+        self.voting_strategy = voting_strategy or (VotingStrategy() if VotingStrategy else None)
+        self.profiler = profiler or (TaskProfiler() if TaskProfiler else None)
+        self.feedback_memory = feedback_memory or (FeedbackMemory() if FeedbackMemory else None)
+        self.confidence_scorer = confidence_scorer or (ConfidenceScorer() if ConfidenceScorer else None)
 
         # Initialize Hugging Face models if applicable
         if self.config.get("use_hf", False) and AutoTokenizer and AutoModelForCausalLM:
@@ -119,7 +119,7 @@ class LLMRouter:
                 except Exception as e:
                     self.logger.error(f"Failed to initialize Hugging Face model {model_config['hf_model']}: {e}")
 
-    def _get_model(self, name: str) -> BaseLLM:
+    def _get_model(self, name: str) -> 'BaseLLM':
         """Retrieve or initialize a model by name."""
         if name not in self.models:
             model_config = self.config.get(name)
@@ -134,7 +134,7 @@ class LLMRouter:
                 )
         return self.models[name]
 
-    def _register_plugin_model(self, model_name: str, model_instance: BaseLLM):
+    def _register_plugin_model(self, model_name: str, model_instance: 'BaseLLM'):
         """Dynamically register a plugin-style model."""
         if not isinstance(model_instance, BaseLLM):
             raise TypeError("Model instance must inherit from BaseLLM.")
@@ -265,8 +265,118 @@ class LLMRouter:
             return self._fallback_response(model_name, goal, context)
 
     def _simulate_llm(self, model_name: str, goal: str, context: Optional[str]) -> Dict:
-        """Simulate LLM response (existing logic)."""
-        # Simulated logic for non-Hugging Face models
+        """
+        Simulate LLM response (existing logic).
+        If the goal requests to 'track time', return a structured tool plan.
+        """
+        # Modular enhancement: handle "track time" goals with a structured tool plan
+        if goal and "track time" in goal.lower():
+            tool_code = '''import time
+from llm.base_llm import BaseTool
+
+class TimeTrackerTool(BaseTool):
+    """
+    Tool to track elapsed time for tasks.
+    """
+
+    def __init__(self):
+        self._start_time = None
+        self._end_time = None
+        self._elapsed = 0.0
+
+    def start(self):
+        """Start timing."""
+        self._start_time = time.time()
+        self._end_time = None
+
+    def stop(self):
+        """Stop timing and calculate elapsed time."""
+        if self._start_time is None:
+            raise RuntimeError("Timer was not started.")
+        self._end_time = time.time()
+        self._elapsed = self._end_time - self._start_time
+
+    def elapsed(self):
+        """Return elapsed time in seconds."""
+        if self._start_time is None:
+            return 0.0
+        if self._end_time is not None:
+            return self._elapsed
+        return time.time() - self._start_time
+
+    def reset(self):
+        """Reset the timer."""
+        self._start_time = None
+        self._end_time = None
+        self._elapsed = 0.0
+
+    def run(self, *args, **kwargs):
+        \"\"\"
+        Example run method to comply with BaseTool interface.
+        \"\"\"
+        action = kwargs.get("action")
+        if action == "start":
+            self.start()
+            return {"status": "started"}
+        elif action == "stop":
+            self.stop()
+            return {"status": "stopped", "elapsed": self.elapsed()}
+        elif action == "elapsed":
+            return {"elapsed": self.elapsed()}
+        elif action == "reset":
+            self.reset()
+            return {"status": "reset"}
+        else:
+            return {"error": "Unknown action"}
+'''
+            test_code = '''import unittest
+from tools.time_tracker import TimeTrackerTool
+import time
+
+class TestTimeTrackerTool(unittest.TestCase):
+    def test_start_stop_elapsed(self):
+        tracker = TimeTrackerTool()
+        tracker.start()
+        time.sleep(0.1)
+        tracker.stop()
+        elapsed = tracker.elapsed()
+        self.assertTrue(elapsed >= 0.1)
+        self.assertAlmostEqual(elapsed, tracker._elapsed, places=4)
+
+    def test_reset(self):
+        tracker = TimeTrackerTool()
+        tracker.start()
+        time.sleep(0.05)
+        tracker.stop()
+        tracker.reset()
+        self.assertEqual(tracker._start_time, None)
+        self.assertEqual(tracker._end_time, None)
+        self.assertEqual(tracker._elapsed, 0.0)
+
+    def test_run_interface(self):
+        tracker = TimeTrackerTool()
+        result = tracker.run(action="start")
+        self.assertEqual(result["status"], "started")
+        time.sleep(0.05)
+        result = tracker.run(action="stop")
+        self.assertEqual(result["status"], "stopped")
+        self.assertTrue(result["elapsed"] >= 0.05)
+        tracker.run(action="reset")
+        self.assertEqual(tracker._elapsed, 0.0)
+
+if __name__ == "__main__":
+    unittest.main()
+'''
+            return {
+                "success": True,
+                "result": {
+                    "file": "tools/time_tracker.py",
+                    "class": "TimeTrackerTool",
+                    "code": tool_code,
+                    "test": test_code
+                }
+            }
+        # Existing simulation logic remains untouched for all other goals
         return {"success": True, "result": f"Simulated response for {model_name} with goal: {goal}"}
 
     def _fallback_response(self, model_name: str, goal: str, context: Optional[str]) -> Dict:
