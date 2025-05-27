@@ -552,3 +552,8 @@ class PlanVerifier:
             "success": len(errors) == 0,
             "error": "; ".join(errors) if errors else None
         }
+
+# Test-mode only validator check (delete after confirming)
+if __name__ == "__main__":
+    engine = SelfCodingEngine()
+    print("Registered validators:", list(engine.validator_registry.keys()))
