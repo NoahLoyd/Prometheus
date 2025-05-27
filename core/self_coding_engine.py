@@ -2,6 +2,7 @@ import importlib
 import sys
 import traceback
 import os
+import logging
 from typing import Dict, Any, Optional, List
 
 from tools.prompt_decomposer import PromptDecomposer
@@ -10,6 +11,15 @@ from tools.base_tool import BaseTool
 from tools.tool_manager import ToolManager
 from addons.notebook import AddOnNotebook
 
+# --- Enhanced logging setup ---
+logger = logging.getLogger("Promethyn.SelfCodingEngine")
+logger.setLevel(logging.INFO)  # Change to DEBUG for more verbosity
+if not logger.handlers:
+    ch = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+
 class SelfCodingEngine:
     """
     SelfCodingEngine orchestrates the self-coding AGI workflow:
@@ -17,12 +27,18 @@ class SelfCodingEngine:
       - Decomposes it into one or more structured module plans.
       - Generates, writes, validates, and registers each tool.
       - Logs all outcomes for strategic learning.
+      - Enforces Promethyn standards and supports future extensibility.
     """
+
+    # --- Validator hooks (extensible, for future use) ---
+    VALIDATORS = ["MathEvaluator", "PlanVerifier", "CodeCritic"]  # Placeholder for plugging in
 
     def __init__(self, notebook: Optional[AddOnNotebook] = None):
         self.decomposer = PromptDecomposer()
         self.builder = ModuleBuilderTool()
         self.notebook = notebook or AddOnNotebook()
+        self.logger = logger
+        self.validator_registry = {}  # For future validator plug-in
 
     def process_prompt(
         self,
@@ -39,6 +55,8 @@ class SelfCodingEngine:
         - Logs all successes/failures.
         - Failed generations/validations are added to retry_later and logged.
         - Successes are saved to short_term_memory['generated_tools'] if provided.
+        - Performs Promethyn internal standards checks.
+        - Hooks for future validators.
         Returns a dict summarizing all operations.
         """
         results: List[dict] = []
@@ -54,6 +72,7 @@ class SelfCodingEngine:
             log_msg = f"Prompt decomposition failed: {e}\n{tb}"
             if self.notebook:
                 self.notebook.log("prompt_decomposition_failure", {"prompt": prompt, "error": log_msg})
+            self.logger.error(log_msg)
             return {"success": False, "error": log_msg, "results": [], "retry_later": []}
 
         # 2. For each tool, run the generation/validation/registration pipeline
@@ -75,12 +94,14 @@ class SelfCodingEngine:
                     single_result["registration"] = {"success": False, "error": msg}
                     retry_later.append({"plan": plan, "reason": msg})
                     results.append(single_result)
+                    self.logger.warning(msg)
                     continue
                 if test_path and os.path.exists(test_path):
                     msg = f"Test file exists, skipping: {test_path}"
                     single_result["registration"] = {"success": False, "error": msg}
                     retry_later.append({"plan": plan, "reason": msg})
                     results.append(single_result)
+                    self.logger.warning(msg)
                     continue
 
                 # --- Write the main tool code file ---
@@ -98,6 +119,52 @@ class SelfCodingEngine:
                         f.write(test_code)
                 else:
                     raise ValueError("Missing test_path or test_code in plan.")
+
+                # --- Promethyn internal standards check ---
+                standards_errors = self._check_standards(plan, tool_code, test_code)
+                if standards_errors:
+                    err_msg = f"Promethyn standards not met: {standards_errors}"
+                    single_result["registration"] = {"success": False, "error": err_msg}
+                    retry_later.append({"plan": plan, "reason": err_msg})
+                    if self.notebook:
+                        self.notebook.log("standards_failure", {"plan": plan, "errors": standards_errors})
+                    self.logger.error(err_msg)
+                    results.append(single_result)
+                    continue
+
+                # --- Validator hooks (future extensibility) ---
+                for validator_name in self.VALIDATORS:
+                    validator = self.validator_registry.get(validator_name)
+                    if validator:
+                        try:
+                            validator_result = validator(plan, tool_code, test_code)
+                            if not validator_result.get("success", True):
+                                val_msg = f"Validator {validator_name} failed: {validator_result.get('error')}"
+                                single_result["registration"] = {"success": False, "error": val_msg}
+                                retry_later.append({"plan": plan, "reason": val_msg})
+                                if self.notebook:
+                                    self.notebook.log("validator_failure", {
+                                        "plan": plan,
+                                        "validator": validator_name,
+                                        "error": val_msg,
+                                    })
+                                self.logger.error(val_msg)
+                                results.append(single_result)
+                                continue
+                        except Exception as val_ex:
+                            tb = traceback.format_exc()
+                            val_msg = f"Validator {validator_name} raised: {val_ex}\n{tb}"
+                            single_result["registration"] = {"success": False, "error": val_msg}
+                            retry_later.append({"plan": plan, "reason": val_msg})
+                            if self.notebook:
+                                self.notebook.log("validator_exception", {
+                                    "plan": plan,
+                                    "validator": validator_name,
+                                    "error": val_msg,
+                                })
+                            self.logger.error(val_msg)
+                            results.append(single_result)
+                            continue
 
                 # --- Dynamic import of tool module and class ---
                 module_path = tool_path[:-3].replace("/", ".").replace("\\", ".") if tool_path.endswith(".py") else tool_path.replace("/", ".").replace("\\", ".")
@@ -127,6 +194,7 @@ class SelfCodingEngine:
                                 "validation": validation_result,
                                 "error": fail_msg,
                             })
+                        self.logger.error(fail_msg)
                         results.append(single_result)
                         continue
 
@@ -140,6 +208,7 @@ class SelfCodingEngine:
                             "plan": plan,
                             "error": fail_msg,
                         })
+                    self.logger.error(fail_msg)
                     results.append(single_result)
                     continue
 
@@ -169,6 +238,7 @@ class SelfCodingEngine:
                         "error": str(e),
                         "traceback": tb,
                     })
+                self.logger.error(fail_msg)
             results.append(single_result)
 
         # --- Log retry_later to memory or AddOnNotebook ---
@@ -178,6 +248,8 @@ class SelfCodingEngine:
                 short_term_memory.setdefault("tool_retry_queue", []).extend(retry_later)
             if self.notebook:
                 self.notebook.log("tool_retry_later", retry_log)
+            for retry in retry_later:
+                self._schedule_retry(retry["plan"], retry["reason"])
 
         return {
             "success": len(retry_later) == 0,
@@ -203,6 +275,7 @@ class SelfCodingEngine:
                 print(f"[Tool Registration] {msg}")
                 if self.notebook:
                     self.notebook.log("tool_registration_failure", {"plan": plan, "error": msg})
+                self.logger.error(msg)
                 return {"success": False, "error": msg}
 
             # Convert file path to module path (e.g. tools/time_tracker.py -> tools.time_tracker)
@@ -219,6 +292,7 @@ class SelfCodingEngine:
                 print(f"[Tool Registration] {msg}")
                 if self.notebook:
                     self.notebook.log("tool_registration_failure", {"plan": plan, "error": msg})
+                self.logger.error(msg)
                 return {"success": False, "error": msg}
 
             tool_class = getattr(module, class_name, None)
@@ -227,6 +301,7 @@ class SelfCodingEngine:
                 print(f"[Tool Registration] {msg}")
                 if self.notebook:
                     self.notebook.log("tool_registration_failure", {"plan": plan, "error": msg})
+                self.logger.error(msg)
                 return {"success": False, "error": msg}
 
             # Ensure the tool class inherits from BaseTool
@@ -235,6 +310,7 @@ class SelfCodingEngine:
                 print(f"[Tool Registration] {msg}")
                 if self.notebook:
                     self.notebook.log("tool_registration_failure", {"plan": plan, "error": msg})
+                self.logger.error(msg)
                 return {"success": False, "error": msg}
 
             tool_instance = tool_class()
@@ -243,6 +319,7 @@ class SelfCodingEngine:
                 tool_manager.register_tool(tool_instance)
                 success_msg = f"Tool '{class_name}' registered successfully in ToolManager."
                 print(f"[Tool Registration] {success_msg}")
+                self.logger.info(success_msg)
                 return {"success": True, "error": "", "tool": tool_instance}
             else:
                 info_msg = (
@@ -250,6 +327,7 @@ class SelfCodingEngine:
                     f"To register manually: tool_manager.register_tool(tool_instance)"
                 )
                 print(f"[Tool Registration] {info_msg}")
+                self.logger.info(info_msg)
                 return {"success": True, "warning": info_msg, "tool": tool_instance}
 
         except Exception as e:
@@ -257,4 +335,53 @@ class SelfCodingEngine:
             print(f"[Tool Registration] Exception: {e}\n{tb}")
             if self.notebook:
                 self.notebook.log("tool_registration_failure", {"plan": plan, "error": str(e)})
+            self.logger.error(f"Tool registration exception: {e}")
             return {"success": False, "error": str(e), "traceback": tb}
+
+    # --- Internal standards enforcement for Promethyn AGI tools ---
+    def _check_standards(self, plan, tool_code, test_code) -> List[str]:
+        """
+        Run Promethyn standards checks on code and plan: safety, modularity, testability.
+        Returns list of error strings, or empty list if all standards are met.
+        """
+        errors = []
+        # Safety: Check for dangerous operations (basic, extendable to AST-based)
+        unsafe_keywords = ["os.system", "eval(", "exec(", "subprocess.Popen", "open('/dev", "rm -rf"]
+        for kw in unsafe_keywords:
+            if kw in (tool_code or ""):
+                errors.append(f"Unsafe operation detected: {kw}")
+
+        # Modularity: Check for at least one class, and that the class matches plan
+        if plan.get("class") not in (tool_code or ""):
+            errors.append("Tool class does not match plan or is missing.")
+
+        # Testability: Must have test code and 'run' method
+        if not test_code or ("def test" not in test_code and "class Test" not in test_code):
+            errors.append("No proper test defined or missing test function/class.")
+        if "def run(" not in (tool_code or ""):
+            errors.append("No 'run' method implemented in tool.")
+
+        # TODO: Add more robust AST-based and pattern-based checks for safety, modularity, testability
+
+        return errors
+
+    # --- Placeholder for future caching mechanism ---
+    def _cache_result(self, key, value):
+        """
+        TODO: Implement caching (e.g., Redis, in-memory, disk) for tool generation and validation results.
+        """
+        pass
+
+    # --- Placeholder for retry mechanism ---
+    def _schedule_retry(self, plan, reason):
+        """
+        TODO: Implement exponential backoff retry system for failed tool generations/validations.
+        """
+        self.logger.warning(f"Retry scheduled for plan {plan} due to: {reason}")
+
+    # --- Hook for future multi-phase planning ---
+    def _multi_phase_plan(self, plan):
+        """
+        TODO: Implement multi-phase build/execution logic for complex agentic projects.
+        """
+        return plan
