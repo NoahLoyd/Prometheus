@@ -40,6 +40,18 @@ class SelfCodingEngine:
         self.logger = logger
         self.validator_registry = {}  # For future validator plug-in
 
+    # --- AGI EXTENSION: Modular Validator Registration API ---
+    def register_validator(self, name: str, validator_callable):
+        """
+        Register a validator at runtime.
+        :param name: Unique string identifier for the validator.
+        :param validator_callable: Callable with signature (plan, tool_code, test_code) -> dict
+        """
+        if not callable(validator_callable):
+            raise ValueError("Validator must be callable.")
+        self.validator_registry[name] = validator_callable
+        self.logger.info(f"Validator '{name}' registered successfully.")
+
     def process_prompt(
         self,
         prompt: str,
@@ -166,6 +178,30 @@ class SelfCodingEngine:
                             results.append(single_result)
                             continue
 
+                # --- AGI EXTENSION: Enhanced Validator Audit Logging ---
+                for validator_name in self.VALIDATORS:
+                    validator = self.validator_registry.get(validator_name)
+                    if validator:
+                        try:
+                            validator_result = validator(plan, tool_code, test_code)
+                            audit_log = {
+                                "plan": plan,
+                                "validator": validator_name,
+                                "result": validator_result,
+                            }
+                            if self.notebook:
+                                self.notebook.log("validator_audit", audit_log)
+                            self.logger.debug(f"Validator '{validator_name}' outcome: {validator_result}")
+                        except Exception as val_ex:
+                            audit_log = {
+                                "plan": plan,
+                                "validator": validator_name,
+                                "exception": str(val_ex),
+                            }
+                            if self.notebook:
+                                self.notebook.log("validator_audit_exception", audit_log)
+                            self.logger.debug(f"Validator '{validator_name}' exception during audit: {val_ex}")
+
                 # --- Dynamic import of tool module and class ---
                 module_path = tool_path[:-3].replace("/", ".").replace("\\", ".") if tool_path.endswith(".py") else tool_path.replace("/", ".").replace("\\", ".")
                 if module_path in sys.modules:
@@ -184,6 +220,13 @@ class SelfCodingEngine:
                 try:
                     validation_result = tool_instance.run("test")
                     single_result["validation"] = validation_result
+                    if self.notebook:
+                        self.notebook.log("test_run", {
+                            "plan": plan,
+                            "result": validation_result,
+                            "status": "success"
+                        })
+                    self.logger.info(f"Test run for '{class_name}' succeeded: {validation_result}")
                     if not (isinstance(validation_result, dict) and validation_result.get("success", False)):
                         fail_msg = f"Tool validation failed: {validation_result}"
                         single_result["registration"] = {"success": False, "error": fail_msg}
@@ -208,7 +251,13 @@ class SelfCodingEngine:
                             "plan": plan,
                             "error": fail_msg,
                         })
+                        self.notebook.log("test_run", {
+                            "plan": plan,
+                            "error": fail_msg,
+                            "status": "exception"
+                        })
                     self.logger.error(fail_msg)
+                    self.logger.error(f"Test run for '{class_name}' raised exception: {fail_msg}")
                     results.append(single_result)
                     continue
 
@@ -372,12 +421,14 @@ class SelfCodingEngine:
         """
         pass
 
-    # --- Placeholder for retry mechanism ---
+    # --- AGI EXTENSION: Retry Scheduling Telemetry ---
     def _schedule_retry(self, plan, reason):
         """
         TODO: Implement exponential backoff retry system for failed tool generations/validations.
         """
         self.logger.warning(f"Retry scheduled for plan {plan} due to: {reason}")
+        if self.notebook:
+            self.notebook.log("retry_scheduled", {"plan": plan, "reason": reason})
 
     # --- Hook for future multi-phase planning ---
     def _multi_phase_plan(self, plan):
