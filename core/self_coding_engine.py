@@ -3,7 +3,7 @@ import sys
 import traceback
 import os
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Callable  # <-- Added Callable for type hints
 
 from tools.prompt_decomposer import PromptDecomposer
 from tools.module_builder import ModuleBuilderTool
@@ -40,16 +40,39 @@ class SelfCodingEngine:
         self.logger = logger
         self.validator_registry = {}  # For future validator plug-in
 
-    # --- AGI EXTENSION: Modular Validator Registration API ---
-    def register_validator(self, name: str, validator_callable):
+        # --- Register core validators safely on instantiation ---
+        self.register_validator("MathEvaluator", MathEvaluator())
+        self.register_validator("PlanVerifier", PlanVerifier())
+
+    def register_validator(
+        self,
+        name: str,
+        instance: Callable,
+        allow_overwrite: bool = False
+    ):
         """
-        Register a validator at runtime.
+        Register a validator at runtime in a modular, safe, and extensible way.
+
         :param name: Unique string identifier for the validator.
-        :param validator_callable: Callable with signature (plan, tool_code, test_code) -> dict
+        :param instance: Callable with signature (plan, tool_code, test_code) -> dict.
+        :param allow_overwrite: If False (default), protects existing validators from being overwritten.
+        :raises ValueError: If instance is not callable or if attempting to overwrite without permission.
         """
-        if not callable(validator_callable):
-            raise ValueError("Validator must be callable.")
-        self.validator_registry[name] = validator_callable
+        if not callable(instance):
+            error_msg = f"Validator '{name}' must be callable."
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
+        if name in self.validator_registry and not allow_overwrite:
+            error_msg = (
+                f"Validator '{name}' is already registered. "
+                f"Use allow_overwrite=True to replace."
+            )
+            self.logger.warning(error_msg)
+            raise ValueError(error_msg)
+        # Log if overwriting
+        if name in self.validator_registry and allow_overwrite:
+            self.logger.info(f"Validator '{name}' is being overwritten.")
+        self.validator_registry[name] = instance
         self.logger.info(f"Validator '{name}' registered successfully.")
 
     def process_prompt(
@@ -436,6 +459,7 @@ class SelfCodingEngine:
         TODO: Implement multi-phase build/execution logic for complex agentic projects.
         """
         return plan
+
 class MathEvaluator:
     """
     MathEvaluator
