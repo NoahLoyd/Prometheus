@@ -70,12 +70,16 @@ except ImportError as e:
 
 
 class LLMRouter:
-    def __init__(self, config: Dict[str, Dict], evaluation_strategy: Optional['EvaluationStrategy'] = None,
-                 fallback_strategy: Optional['FallbackStrategy'] = None,
-                 voting_strategy: Optional['VotingStrategy'] = None,
-                 profiler: Optional['TaskProfiler'] = None,
-                 feedback_memory: Optional['FeedbackMemory'] = None,
-                 confidence_scorer: Optional['ConfidenceScorer'] = None):
+    def __init__(
+        self,
+        config: Optional[Dict] = None,
+        evaluation_strategy: Optional['EvaluationStrategy'] = None,
+        fallback_strategy: Optional['FallbackStrategy'] = None,
+        voting_strategy: Optional['VotingStrategy'] = None,
+        profiler: Optional['TaskProfiler'] = None,
+        feedback_memory: Optional['FeedbackMemory'] = None,
+        confidence_scorer: Optional['ConfidenceScorer'] = None
+    ):
         """
         Initialize the LLM Router with configurations and strategies.
 
@@ -87,6 +91,8 @@ class LLMRouter:
         :param feedback_memory: Feedback Memory system for storing task results.
         :param confidence_scorer: Confidence Scorer for evaluating outputs.
         """
+        if config is None:
+            config = {"models": ["simulated"], "use_simulation": True}
         self.config = config
         self.models: Dict[str, BaseLLM] = {}
         self.hf_models: Dict[str, Dict] = {}
@@ -108,7 +114,7 @@ class LLMRouter:
     def _initialize_hf_models(self):
         """Initialize Hugging Face models specified in the configuration."""
         for name, model_config in self.config.items():
-            if "hf_model" in model_config:
+            if isinstance(model_config, dict) and "hf_model" in model_config:
                 try:
                     self.logger.info(f"Initializing Hugging Face model: {model_config['hf_model']}")
                     tokenizer = AutoTokenizer.from_pretrained(model_config["hf_model"])
