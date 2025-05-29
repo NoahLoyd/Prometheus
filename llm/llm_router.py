@@ -96,7 +96,9 @@ class LLMRouter:
         self.config = config
         self.models: Dict[str, BaseLLM] = {}
         self.hf_models: Dict[str, Dict] = {}
-        self.logger = Logging()
+        # PATCH: Logging() now requires a 'memory' argument.
+        # Use config["memory"] if present, else use empty dict.
+        self.logger = Logging(memory=config.get("memory", {}))
         self.task_profiles: Dict[Tuple[str, Optional[str]], Dict[str, int]] = {}
         self.cache: Dict[str, List[Tuple[str, str]]] = {}
         self.cache_lock = threading.Lock()  # Ensure thread-safe caching
