@@ -115,9 +115,14 @@ class PromptDecomposer:
 
     # --- ADDITIONS END ---
 
-    def __init__(self):
-        # Initialize the LLMRouter for structured code generation
-        self.llm = LLMRouter()
+    def __init__(self, config: Optional[dict] = None):
+        """
+        Initialize the LLMRouter for structured code generation.
+        Accepts an optional config dictionary for LLMRouter. If not provided, uses a safe default config.
+        """
+        if config is None:
+            config = { "models": ["simulated"], "use_simulation": True }
+        self.llm = LLMRouter(config)
 
     def decompose(self, prompt: str) -> Dict[str, Any]:
         """
