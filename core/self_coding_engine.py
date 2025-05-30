@@ -253,6 +253,102 @@ class SelfCodingEngine:
                     results.append(single_result)
                     continue
 
+                # --- BEGIN: Promethyn AGI Enhanced Validation Pipeline Injection ---
+                validation_passed = True
+                validator_results = []
+                test_run_result = None
+
+                # 1. Run all existing validators (PlanVerifier, MathEvaluator, CodeQualityAssessor)
+                for validator_name in ["PlanVerifier", "MathEvaluator", "CodeQualityAssessor"]:
+                    validator = self.validator_registry.get(validator_name)
+                    if validator:
+                        try:
+                            result = validator(plan, tool_code, test_code)
+                            validator_results.append((validator_name, result))
+                            if not result.get("success", True):
+                                validation_passed = False
+                                if self.notebook:
+                                    self.notebook.log("validator_failure", {
+                                        "plan": plan,
+                                        "validator": validator_name,
+                                        "error": result.get("error")
+                                    })
+                        except Exception as ex:
+                            validation_passed = False
+                            if self.notebook:
+                                self.notebook.log("validator_exception", {
+                                    "plan": plan,
+                                    "validator": validator_name,
+                                    "exception": str(ex)
+                                })
+
+                # 2. Inject a security scan using validate_security(file_path)
+                security_validation_result = None
+                if validate_security is not None and tool_path:
+                    try:
+                        security_validation_result = validate_security(tool_path)
+                        validator_results.append(("SecurityValidator", security_validation_result))
+                        if not security_validation_result.get("success", True):
+                            validation_passed = False
+                            if self.notebook:
+                                self.notebook.log("validator_failure", {
+                                    "plan": plan,
+                                    "validator": "SecurityValidator",
+                                    "error": security_validation_result.get("error")
+                                })
+                    except Exception as ex:
+                        validation_passed = False
+                        if self.notebook:
+                            self.notebook.log("validator_exception", {
+                                "plan": plan,
+                                "validator": "SecurityValidator",
+                                "exception": str(ex)
+                            })
+
+                # 3. If the file is a test (ends with "_test.py"), run test_tool_runner.run_test_file()
+                if tool_path and tool_path.endswith("_test.py"):
+                    try:
+                        test_run_result = self.test_runner.run_test_file(tool_path)
+                        if not test_run_result.get("passed", False):
+                            validation_passed = False
+                            if self.notebook:
+                                self.notebook.log("test_tool_runner_failure", {
+                                    "plan": plan,
+                                    "test_result": test_run_result,
+                                    "error": test_run_result.get("error", test_run_result)
+                                })
+                    except Exception as ex:
+                        validation_passed = False
+                        if self.notebook:
+                            self.notebook.log("test_tool_runner_exception", {
+                                "plan": plan,
+                                "exception": str(ex)
+                            })
+
+                # 4. If ANY validator or test fails, reject the tool/module and do NOT register it.
+                if not validation_passed:
+                    fail_msg = "Tool/module rejected due to failed validation or test."
+                    single_result["registration"] = {"success": False, "error": fail_msg}
+                    retry_later.append({"plan": plan, "reason": fail_msg})
+                    if self.notebook:
+                        self.notebook.log("tool_rejected", {
+                            "plan": plan,
+                            "validator_results": validator_results,
+                            "test_run_result": test_run_result,
+                            "error": fail_msg
+                        })
+                    results.append(single_result)
+                    continue
+                else:
+                    if self.notebook:
+                        self.notebook.log("tool_validated", {
+                            "plan": plan,
+                            "validator_results": validator_results,
+                            "test_run_result": test_run_result,
+                            "status": "success"
+                        })
+                # --- END: Promethyn AGI Enhanced Validation Pipeline Injection ---
+
                 # --- Validator hooks (future extensibility) ---
                 validators_passed = True
                 for validator_name in self.VALIDATORS:
