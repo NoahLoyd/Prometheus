@@ -13,15 +13,6 @@ from addons.notebook import AddOnNotebook
 from tools.test_tool_runner import TestToolRunner  # <--- NEW IMPORT
 from core.validators.extended_validators import register_validators
 
-# --- Enhanced logging setup ---
-logger = logging.getLogger("Promethyn.SelfCodingEngine")
-logger.setLevel(logging.INFO)  # Change to DEBUG for more verbosity
-if not logger.handlers:
-    ch = logging.StreamHandler()
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
-
 class SelfCodingEngine:
     """
     SelfCodingEngine orchestrates the self-coding AGI workflow:
@@ -39,7 +30,7 @@ class SelfCodingEngine:
         self.decomposer = PromptDecomposer()
         self.builder = ModuleBuilderTool()
         self.notebook = notebook or AddOnNotebook()
-        self.logger = logger
+        self.logger = self._get_logger()
         self.validator_registry = {}  # For future validator plug-in
 
         # --- Register core validators safely on instantiation ---
@@ -47,8 +38,18 @@ class SelfCodingEngine:
         self.register_validator("PlanVerifier", PlanVerifier())
         register_validators(self.validators)  # <-- Inject extended Promethyn validators here
 
-        # --- Register TestToolRunner instance ---
-        self.test_runner = TestToolRunner()  # <--- NEW
+        # --- Register TestToolRunner instance (instantiated ONCE here) ---
+        self.test_runner = TestToolRunner()  # <--- Elite singleton placement
+
+    def _get_logger(self):
+        logger = logging.getLogger("Promethyn.SelfCodingEngine")
+        logger.setLevel(logging.INFO)  # Change to DEBUG for more verbosity
+        if not logger.handlers:
+            ch = logging.StreamHandler()
+            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            ch.setFormatter(formatter)
+            logger.addHandler(ch)
+        return logger
 
     def register_validator(
         self,
@@ -174,6 +175,7 @@ class SelfCodingEngine:
                     continue
 
                 # --- Validator hooks (future extensibility) ---
+                validators_passed = True
                 for validator_name in self.VALIDATORS:
                     validator = self.validator_registry.get(validator_name)
                     if validator:
@@ -191,7 +193,8 @@ class SelfCodingEngine:
                                     })
                                 self.logger.error(val_msg)
                                 results.append(single_result)
-                                continue
+                                validators_passed = False
+                                break  # Stop further validators and do not run test runner
                         except Exception as val_ex:
                             tb = traceback.format_exc()
                             val_msg = f"Validator {validator_name} raised: {val_ex}\n{tb}"
@@ -205,7 +208,29 @@ class SelfCodingEngine:
                                 })
                             self.logger.error(val_msg)
                             results.append(single_result)
-                            continue
+                            validators_passed = False
+                            break
+
+                if not validators_passed:
+                    continue
+
+                # --- Final test: TestToolRunner on generated test file ---
+                if test_path:
+                    test_result = self.test_runner.run_test_file(test_path)
+                    if not test_result.get("passed", False):
+                        fail_msg = f"TestToolRunner failed: {test_result.get('error', test_result)}"
+                        single_result["registration"] = {"success": False, "error": fail_msg}
+                        retry_later.append({"plan": plan, "reason": fail_msg})
+                        if self.notebook:
+                            self.notebook.log("test_tool_runner_failure", {
+                                "plan": plan,
+                                "test_result": test_result,
+                                "error": fail_msg,
+                            })
+                            self._log_to_notebook()
+                        self.logger.error(fail_msg)
+                        results.append(single_result)
+                        continue
 
                 # --- AGI EXTENSION: Enhanced Validator Audit Logging ---
                 for validator_name in self.VALIDATORS:
@@ -289,24 +314,6 @@ class SelfCodingEngine:
                     self.logger.error(f"Test run for '{class_name}' raised exception: {fail_msg}")
                     results.append(single_result)
                     continue
-
-                # --- Third Validator: TestToolRunner (runs file-based tests) ---
-                if test_path:
-                    test_result = self.test_runner.run_test_file(test_path)
-                    if not test_result.get("passed", False):
-                        fail_msg = f"TestToolRunner failed: {test_result.get('error', test_result)}"
-                        single_result["registration"] = {"success": False, "error": fail_msg}
-                        retry_later.append({"plan": plan, "reason": fail_msg})
-                        if self.notebook:
-                            self.notebook.log("test_tool_runner_failure", {
-                                "plan": plan,
-                                "test_result": test_result,
-                                "error": fail_msg,
-                            })
-                            self._log_to_notebook()
-                        self.logger.error(fail_msg)
-                        results.append(single_result)
-                        continue
 
                 # --- Register tool if requested ---
                 reg_result = self._register_tool(plan, tool_manager)
