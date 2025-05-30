@@ -1,0 +1,46 @@
+{
+    "models": {
+        "gpt-j-6b": {
+            "type": "local",
+            "model_path": "models/gpt-j-6b",
+            "model_type": "gptj",
+            "quantization": "4bit",
+            "min_vram_bytes": 6442450944,  // 6GB
+            "optimal_vram_bytes": 8589934592,  // 8GB
+            "can_offload": true,
+            "priority": 90,
+            "max_sequence_length": 2048,
+            "device_map": "auto",
+            "trust_remote_code": false,
+            "load_in_8bit": true,
+            "cache_dir": "cache/gpt-j-6b"
+        },
+        "llama-7b": {
+            "type": "local",
+            "model_path": "models/llama-7b",
+            "model_type": "llama",
+            "quantization": "4bit",
+            "min_vram_bytes": 7516192768,  // 7GB
+            "optimal_vram_bytes": 10737418240,  // 10GB
+            "can_offload": true,
+            "priority": 95,
+            "max_sequence_length": 4096,
+            "device_map": "auto",
+            "trust_remote_code": false,
+            "load_in_8bit": true,
+            "cache_dir": "cache/llama-7b"
+        }
+    },
+    "registry": {
+        "max_cached_models": 3,
+        "cache_ttl_seconds": 3600,
+        "log_file": "logs/model_registry.log",
+        "simulation_mode": false
+    },
+    "hardware": {
+        "prefer_larger_models": true,
+        "allow_cpu_fallback": true,
+        "min_free_vram_percent": 10,
+        "cuda_device_preference": ["cuda:0", "cuda:1"]
+    }
+}
