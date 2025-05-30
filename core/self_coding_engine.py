@@ -11,6 +11,7 @@ from tools.base_tool import BaseTool
 from tools.tool_manager import ToolManager
 from addons.notebook import AddOnNotebook
 from tools.test_tool_runner import TestToolRunner  # <--- NEW IMPORT
+from core.validators.extended_validators import register_validators
 
 # --- Enhanced logging setup ---
 logger = logging.getLogger("Promethyn.SelfCodingEngine")
@@ -44,6 +45,7 @@ class SelfCodingEngine:
         # --- Register core validators safely on instantiation ---
         self.register_validator("MathEvaluator", MathEvaluator())
         self.register_validator("PlanVerifier", PlanVerifier())
+        register_validators(self.validators)  # <-- Inject extended Promethyn validators here
 
         # --- Register TestToolRunner instance ---
         self.test_runner = TestToolRunner()  # <--- NEW
