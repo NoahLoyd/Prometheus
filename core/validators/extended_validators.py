@@ -1,0 +1,187 @@
+import ast
+import logging
+import re
+import sys
+import importlib.util
+from typing import Optional, Dict, Any
+
+logger = logging.getLogger("promethyn.validators")
+logging.basicConfig(level=logging.INFO)
+
+
+class CodeQualityAssessor:
+    """
+    Validates code for cleanliness, maintainability, readability, and adherence to standards.
+    Flags poor formatting, long functions, duplicate code, and non-standard practices.
+    Optionally integrates pylint or flake8 if available.
+    """
+
+    MAX_FUNCTION_LENGTH = 40  # lines
+    DUPLICATE_THRESHOLD = 10  # lines
+
+    def __init__(self):
+        self.pylint = self._import_linter('pylint.lint')
+        self.flake8 = self._import_linter('flake8.main.application')
+
+    def _import_linter(self, module_name: str):
+        spec = importlib.util.find_spec(module_name)
+        if spec is not None:
+            return importlib.import_module(module_name)
+        return None
+
+    def validate(self, code: str) -> Dict[str, Optional[str]]:
+        try:
+            tree = ast.parse(code)
+        except SyntaxError as e:
+            logger.error(f"Syntax error: {e}")
+            return {'success': False, 'error': f"Syntax error: {e}"}
+
+        issues = []
+
+        # Check for long functions
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):
+                start = node.lineno
+                end = max(getattr(child, 'end_lineno', start) for child in ast.walk(node))
+                length = end - start + 1
+                if length > self.MAX_FUNCTION_LENGTH:
+                    issues.append(f"Function '{node.name}' is too long ({length} lines).")
+
+        # Check for duplicate code (simple substring method)
+        code_lines = code.splitlines()
+        for i in range(len(code_lines) - self.DUPLICATE_THRESHOLD):
+            snippet = '\n'.join(code_lines[i:i+self.DUPLICATE_THRESHOLD])
+            if code.count(snippet) > 1:
+                issues.append("Duplicate code detected.")
+                break
+
+        # Optionally run linter
+        linter_report = None
+        if self.pylint:
+            try:
+                from pylint.lint import Run
+                # Save code to a temp file
+                import tempfile
+                with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as tf:
+                    tf.write(code)
+                    tf.flush()
+                    results = Run([tf.name], do_exit=False)
+                    if results.linter.msg_status != 0:
+                        linter_report = "Pylint flagged issues."
+            except Exception as e:
+                logger.warning(f"Pylint integration failed: {e}")
+        elif self.flake8:
+            try:
+                from flake8.main.application import Application
+                import tempfile
+                with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as tf:
+                    tf.write(code)
+                    tf.flush()
+                    app = Application()
+                    app.run([tf.name])
+                    if app.result_count > 0:
+                        linter_report = "Flake8 flagged issues."
+            except Exception as e:
+                logger.warning(f"Flake8 integration failed: {e}")
+
+        if linter_report:
+            issues.append(linter_report)
+
+        if issues:
+            logger.info(f"Code quality failed: {issues}")
+            return {'success': False, 'error': "; ".join(issues)}
+        logger.info("Code quality check passed.")
+        return {'success': True, 'error': None}
+
+
+class SecurityScanner:
+    """
+    Scans code for insecure imports, risky logic, hardcoded credentials, open ports, and known CVE patterns.
+    """
+
+    RISKY_BUILTINS = {'eval', 'exec', 'compile', 'input', 'os.system', 'subprocess', 'pickle', 'yaml.load', 'open'}
+    CREDENTIAL_PATTERNS = [
+        r'password\s*=\s*[\'"].+[\'"]',
+        r'api[_-]?key\s*=\s*[\'"].+[\'"]',
+        r'(?:AWS|SECRET|TOKEN)[_\w]*\s*=\s*[\'"].+[\'"]',
+    ]
+    OPEN_PORT_PATTERN = r'(?:bind\s*\(|listen\s*\().*[,=]\s*(\d{2,5})'
+    CVE_PATTERNS = [
+        r'\bos\.system\(',
+        r'\bsubprocess\.(?:Popen|call|run)\(',
+        r'eval\s*\(',
+    ]
+
+    def validate(self, code: str) -> Dict[str, Optional[str]]:
+        issues = []
+
+        # Insecure imports and risky built-ins
+        for risky in self.RISKY_BUILTINS:
+            if risky in code:
+                issues.append(f"Risky builtin or import detected: {risky}")
+
+        # Hardcoded credentials
+        for pattern in self.CREDENTIAL_PATTERNS:
+            if re.search(pattern, code, flags=re.IGNORECASE):
+                issues.append("Hardcoded credentials detected.")
+
+        # Open ports
+        for match in re.finditer(self.OPEN_PORT_PATTERN, code):
+            port = int(match.group(1))
+            if port > 0 and port < 65536:
+                issues.append(f"Open port detected: {port}")
+
+        # Known CVE patterns
+        for pattern in self.CVE_PATTERNS:
+            if re.search(pattern, code):
+                issues.append(f"Known risky pattern detected: {pattern}")
+
+        if issues:
+            logger.warning(f"Security issues found: {issues}")
+            return {'success': False, 'error': "; ".join(issues)}
+        logger.info("Security scan passed.")
+        return {'success': True, 'error': None}
+
+
+class BehavioralSimulator:
+    """
+    Simulates code execution in a restricted environment to detect risky or unexpected runtime behaviors.
+    """
+
+    def validate(self, code: str) -> Dict[str, Optional[str]]:
+        import builtins
+
+        # Restricted builtins
+        SAFE_BUILTINS = {
+            "abs", "all", "any", "bin", "bool", "bytes", "chr", "dict", "divmod", "enumerate",
+            "filter", "float", "format", "hash", "hex", "int", "isinstance", "len", "list", "map",
+            "max", "min", "next", "object", "oct", "ord", "pow", "range", "repr", "reversed",
+            "round", "set", "slice", "sorted", "str", "sum", "tuple", "zip"
+        }
+        restricted_globals = {k: getattr(builtins, k) for k in SAFE_BUILTINS}
+        restricted_globals['__builtins__'] = restricted_globals
+
+        try:
+            exec_env = {}
+            exec(compile(code, "<string>", "exec"), restricted_globals, exec_env)
+        except Exception as e:
+            logger.warning(f"Simulation flagged a runtime error or risky behavior: {e}")
+            return {'success': False, 'error': f"Simulation flagged a runtime error or risky behavior: {e}"}
+
+        logger.info("Behavioral simulation passed.")
+        return {'success': True, 'error': None}
+
+
+# Registration for Promethyn's validator chain (Do NOT overwrite existing logic; inject safely)
+def register_validators(chain: list):
+    """
+    Inject Promethyn validators into the provided chain.
+    """
+    # Insert at the appropriate position, don't overwrite existing logic
+    if not any(isinstance(v, CodeQualityAssessor) for v in chain):
+        chain.append(CodeQualityAssessor())
+    if not any(isinstance(v, SecurityScanner) for v in chain):
+        chain.append(SecurityScanner())
+    if not any(isinstance(v, BehavioralSimulator) for v in chain):
+        chain.append(BehavioralSimulator())
+    logger.info("Promethyn validators registered.")
