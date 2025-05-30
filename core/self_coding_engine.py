@@ -10,6 +10,7 @@ from tools.module_builder import ModuleBuilderTool
 from tools.base_tool import BaseTool
 from tools.tool_manager import ToolManager
 from addons.notebook import AddOnNotebook
+from tools.test_tool_runner import TestToolRunner  # <--- NEW IMPORT
 
 # --- Enhanced logging setup ---
 logger = logging.getLogger("Promethyn.SelfCodingEngine")
@@ -43,6 +44,9 @@ class SelfCodingEngine:
         # --- Register core validators safely on instantiation ---
         self.register_validator("MathEvaluator", MathEvaluator())
         self.register_validator("PlanVerifier", PlanVerifier())
+
+        # --- Register TestToolRunner instance ---
+        self.test_runner = TestToolRunner()  # <--- NEW
 
     def register_validator(
         self,
@@ -284,6 +288,24 @@ class SelfCodingEngine:
                     results.append(single_result)
                     continue
 
+                # --- Third Validator: TestToolRunner (runs file-based tests) ---
+                if test_path:
+                    test_result = self.test_runner.run_test_file(test_path)
+                    if not test_result.get("passed", False):
+                        fail_msg = f"TestToolRunner failed: {test_result.get('error', test_result)}"
+                        single_result["registration"] = {"success": False, "error": fail_msg}
+                        retry_later.append({"plan": plan, "reason": fail_msg})
+                        if self.notebook:
+                            self.notebook.log("test_tool_runner_failure", {
+                                "plan": plan,
+                                "test_result": test_result,
+                                "error": fail_msg,
+                            })
+                            self._log_to_notebook()
+                        self.logger.error(fail_msg)
+                        results.append(single_result)
+                        continue
+
                 # --- Register tool if requested ---
                 reg_result = self._register_tool(plan, tool_manager)
                 single_result["registration"] = reg_result
@@ -459,6 +481,10 @@ class SelfCodingEngine:
         TODO: Implement multi-phase build/execution logic for complex agentic projects.
         """
         return plan
+
+    def _log_to_notebook(self):
+        if self.notebook:
+            self.notebook.log("log", {"msg": "TestToolRunner failure or other critical event."})
 
 class MathEvaluator:
     """
