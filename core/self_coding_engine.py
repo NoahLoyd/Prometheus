@@ -13,6 +13,22 @@ from addons.notebook import AddOnNotebook
 from tools.test_tool_runner import TestToolRunner  # <--- NEW IMPORT
 from core.validators.extended_validators import register_validators
 
+# --- Begin: Imports for new validator modules ---
+try:
+    from core.validators.code_quality_assessor import CodeQualityAssessor
+except ImportError:
+    CodeQualityAssessor = None
+try:
+    from core.validators.security_scanner import SecurityScanner
+except ImportError:
+    SecurityScanner = None
+try:
+    from core.validators.behavioral_simulator import BehavioralSimulator
+except ImportError:
+    BehavioralSimulator = None
+# --- End: Imports for new validator modules ---
+
+
 class SelfCodingEngine:
     """
     SelfCodingEngine orchestrates the self-coding AGI workflow:
@@ -40,6 +56,41 @@ class SelfCodingEngine:
 
         # --- Register TestToolRunner instance (instantiated ONCE here) ---
         self.test_runner = TestToolRunner()  # <--- Elite singleton placement
+
+        # --- Inject new validators at the end of the pipeline in a defensive, modular way ---
+        self._register_enhanced_validators()
+
+    def _register_enhanced_validators(self):
+        """
+        Dynamically and safely register enhanced validators at the end of the validator chain.
+        Preserves all existing validation logic and order.
+        """
+        # Defensive: do not overwrite existing names, log if registration fails.
+        enhanced_validators = [
+            ("CodeQualityAssessor", CodeQualityAssessor),
+            ("SecurityScanner", SecurityScanner),
+            ("BehavioralSimulator", BehavioralSimulator)
+        ]
+        for name, validator_cls in enhanced_validators:
+            if validator_cls is None:
+                self.logger.warning(f"Validator module '{name}' is missing or failed to import; skipping registration.")
+                continue
+            try:
+                instance = validator_cls()
+            except Exception as e:
+                self.logger.error(f"Could not instantiate validator '{name}': {e}")
+                continue
+            try:
+                self.register_validator(name, instance)
+                self.logger.info(f"Validator '{name}' registered and appended to VALIDATORS pipeline.")
+            except ValueError as ve:
+                self.logger.warning(f"Validator '{name}' could not be registered: {ve}")
+
+        # Ensure order: append to VALIDATORS after MathEvaluator/TestToolRunner, never before.
+        # Existing pipeline: ["MathEvaluator", "PlanVerifier", "CodeCritic"]
+        for name, validator_cls in enhanced_validators:
+            if name not in self.VALIDATORS and validator_cls is not None:
+                self.VALIDATORS.append(name)
 
     def _get_logger(self):
         logger = logging.getLogger("Promethyn.SelfCodingEngine")
