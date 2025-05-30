@@ -43,6 +43,15 @@ class PromptDecomposer:
             for kw in keywords:
                 if kw in prompt_lower:
                     return module_type
+        # --- SMARTER FALLBACK CLASSIFIER ---
+        # This replaces the hardcoded "tool" default with a smarter, keyword-based fallback.
+        if any(kw in prompt_lower for kw in ["test", "unit test", "validate behavior"]):
+            return "test"
+        if any(kw in prompt_lower for kw in ["security", "quality", "lint", "scan"]):
+            return "validator"
+        if any(kw in prompt_lower for kw in ["engine", "planner", "brain", "core logic"]):
+            return "core"
+        # Default case: treat as new capability/tool
         return "tool"
 
     def create_multifile_plan(
