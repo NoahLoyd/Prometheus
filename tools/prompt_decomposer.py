@@ -124,6 +124,55 @@ class PromptDecomposer:
             config = { "models": ["simulated"], "use_simulation": True }
         self.llm = LLMRouter(config)
 
+        # --- ENHANCEMENT: Modular Validator Registration ---
+        self.validators = []
+        self._register_default_validators()
+
+    def _register_default_validators(self):
+        """
+        Registers the default validators, preserving chain order and allowing modular extension.
+        Existing validators must remain registered in their canonical order.
+        New validators are appended at the end of the pipeline, per elite extension requirements.
+        """
+        try:
+            # Import existing and new validators defensively.
+            # Existing validator registrations MUST NOT be altered or removed.
+            # New validators are added at the end.
+            from validators.math_evaluator import MathEvaluator
+            from validators.test_tool_runner import TestToolRunner
+        except ImportError:
+            MathEvaluator = None
+            TestToolRunner = None
+
+        # Register canonical validators, if present.
+        if MathEvaluator is not None:
+            self.validators.append(MathEvaluator())
+        if TestToolRunner is not None:
+            self.validators.append(TestToolRunner())
+
+        # --- BEGIN: ELITE EXTENSIONS (Safe/Modular) ---
+        try:
+            from validators.code_quality_assessor import CodeQualityAssessor
+        except ImportError:
+            CodeQualityAssessor = None
+        try:
+            from validators.security_scanner import SecurityScanner
+        except ImportError:
+            SecurityScanner = None
+        try:
+            from validators.behavioral_simulator import BehavioralSimulator
+        except ImportError:
+            BehavioralSimulator = None
+
+        # Register new validators only if their classes are available.
+        if CodeQualityAssessor is not None:
+            self.validators.append(CodeQualityAssessor())
+        if SecurityScanner is not None:
+            self.validators.append(SecurityScanner())
+        if BehavioralSimulator is not None:
+            self.validators.append(BehavioralSimulator())
+        # --- END: ELITE EXTENSIONS ---
+
     def decompose(self, prompt: str) -> Dict[str, Any]:
         """
         Given a prompt, returns a structured plan dictionary.
