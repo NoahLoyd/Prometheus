@@ -1,6 +1,7 @@
 import os
 import re
 from typing import Dict, Any, List, Optional
+from validators.security_validator import validate_security
 
 class ModuleBuilderTool:
     """
@@ -153,6 +154,13 @@ class ModuleBuilderTool:
                         results,
                         overwrite_allowed=overwrite_allowed
                     )
+                    # SECURITY VALIDATION INJECTION (after file written, before registration)
+                    is_secure, sec_msg = validate_security(routed_path)
+                    if not is_secure:
+                        self._addon_log(f"SECURITY VALIDATION FAIL on {routed_path}: {sec_msg}")
+                        results["errors"].append(f"Security validation failed for {routed_path}: {sec_msg}")
+                        results["skipped"].append(routed_path)
+                        continue
                     written_paths.append(routed_path)
                 except Exception as e:
                     results["errors"].append(f"Error writing {routed_path}: {e}")
