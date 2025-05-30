@@ -28,6 +28,12 @@ except ImportError:
     BehavioralSimulator = None
 # --- End: Imports for new validator modules ---
 
+# --- Import Security Validator as required ---
+try:
+    from validators.security_validator import validate_security
+except ImportError:
+    validate_security = None
+# --- End Security Validator import ---
 
 class SelfCodingEngine:
     """
@@ -59,6 +65,28 @@ class SelfCodingEngine:
 
         # --- Inject new validators at the end of the pipeline in a defensive, modular way ---
         self._register_enhanced_validators()
+
+        # --- Inject SecurityValidator into registry and VALIDATORS pipeline if not already present ---
+        # Ensure PlanVerifier ➝ MathEvaluator ➝ CodeQualityAssessor ➝ SecurityValidator ➝ TestToolRunner
+        # Do NOT remove or overwrite any existing validators
+        if validate_security is not None:
+            if "SecurityValidator" not in self.validator_registry:
+                self.register_validator("SecurityValidator", validate_security)
+            # Insert SecurityValidator after CodeQualityAssessor, before TestToolRunner
+            # If CodeQualityAssessor exists, insert after; else after PlanVerifier/MathEvaluator as fallback
+            vlist = self.VALIDATORS
+            if "SecurityValidator" not in vlist:
+                # Find index for CodeQualityAssessor, else PlanVerifier or MathEvaluator
+                insert_after = None
+                for name in ["CodeQualityAssessor", "MathEvaluator", "PlanVerifier"]:
+                    if name in vlist:
+                        insert_after = name
+                        break
+                if insert_after is not None:
+                    idx = vlist.index(insert_after) + 1
+                else:
+                    idx = len(vlist)
+                vlist.insert(idx, "SecurityValidator")
 
     def _register_enhanced_validators(self):
         """
