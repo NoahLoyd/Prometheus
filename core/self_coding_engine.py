@@ -12,6 +12,7 @@ from tools.tool_manager import ToolManager
 from addons.notebook import AddOnNotebook
 from tools.test_tool_runner import TestToolRunner  # <--- NEW IMPORT
 from core.validators.extended_validators import register_validators
+from core.sandbox_runner import SandboxRunner # <--- ADDED FOR SANDBOX INTEGRATION
 
 # --- BEGIN: Fallback Validator Import System ---
 VALIDATOR_PATHS = ["validators", "core.validators"]
@@ -67,6 +68,7 @@ class SelfCodingEngine:
         self.notebook = notebook or AddOnNotebook()
         self.logger = self._get_logger()
         self.validator_registry = {}  # For future validator plug-in
+        self.sandbox_runner = SandboxRunner() # <--- ADDED FOR SANDBOX INTEGRATION
 
         # --- Register core validators safely on instantiation ---
         self.register_validator("MathEvaluator", MathEvaluator())
@@ -277,10 +279,10 @@ class SelfCodingEngine:
                     })
                 self.logger.error(f"Exception in TestToolRunner for test_path '{test_path}' (plan: {plan.get('name', 'N/A')}). Exception: {str(e)}\n{tb_str}")
         elif not self.test_runner:
-             all_results_summary.append({"validator": "TestToolRunner", "result": {"passed": True, "success": True, "info": "TestToolRunner not available/configured."}}) # Assume success if not run
+             all_results_summary.append({"validator": "TestToolRunner", "result": {"passed": True, "success": True, "info": "TestToolRunner not available/configured."}}) # Assume success if not r[...]
              self.logger.info(f"TestToolRunner not available/configured, skipped for plan: {plan.get('name', 'N/A')}.")
         elif not test_path:
-             all_results_summary.append({"validator": "TestToolRunner", "result": {"passed": True, "success": True, "info": "TestToolRunner skipped: test_path not available."}}) # Assume success if not run
+             all_results_summary.append({"validator": "TestToolRunner", "result": {"passed": True, "success": True, "info": "TestToolRunner skipped: test_path not available."}}) # Assume success [...]
              self.logger.info(f"TestToolRunner skipped as test_path is not available for plan: {plan.get('name', 'N/A')}.")
 
         return overall_success, all_results_summary
@@ -517,6 +519,75 @@ class SelfCodingEngine:
                         self.logger.error(fail_msg)
                         results.append(single_result)
                         continue
+                
+                # --- BEGIN SANDBOX INTEGRATION ---
+                # After the tool is generated and all previous validators pass, run in sandbox.
+                sandbox_run_successful = True # Assume true unless sandbox fails or is not applicable
+                if tool_path and hasattr(self, 'sandbox_runner') and self.sandbox_runner:
+                    self.logger.info(f"Attempting sandbox execution for tool: {tool_path} from plan: {plan.get('name', 'N/A')}")
+                    try:
+                        # Ensure the argument name matches the SandboxRunner's method signature
+                        sandbox_result = self.sandbox_runner.run_python_file_in_sandbox(python_file_path=tool_path) 
+                        
+                        # Log the full sandbox result to AddOnNotebook
+                        if self.notebook:
+                            self.notebook.log("sandbox_result", {
+                                "plan_name": plan.get('name', 'N/A'), 
+                                "tool_path": tool_path, 
+                                "result": sandbox_result  # This is the full sandbox result
+                            })
+                        
+                        # Check if sandbox run was successful
+                        if not sandbox_result.get("success", False):
+                            sandbox_run_successful = False
+                            error_details = sandbox_result.get("error", "Sandbox execution indicated failure.")
+                            stdout_log = sandbox_result.get("stdout", "")
+                            stderr_log = sandbox_result.get("stderr", "")
+                            if stdout_log: error_details += f" | stdout: {stdout_log}"
+                            if stderr_log: error_details += f" | stderr: {stderr_log}"
+                            
+                            fail_msg = f"Sandbox execution failed for tool '{tool_path}'. Details: {error_details}"
+                            self.logger.error(fail_msg)
+                            single_result["registration"] = {"success": False, "error": fail_msg, "sandbox_output": sandbox_result}
+                            retry_later.append({"plan": plan, "reason": fail_msg, "details": "sandbox_failure"})
+                            results.append(single_result) 
+                            if self.notebook: # Log specific failure event for sandbox
+                                self.notebook.log("sandbox_execution_failure", {
+                                    "plan": plan, 
+                                    "tool_path": tool_path, 
+                                    "error": fail_msg, 
+                                    "sandbox_result_details": sandbox_result # Full result for this specific failure log
+                                })
+                            continue # Skip to next plan, do not register
+                        else:
+                            self.logger.info(f"Sandbox execution successful for tool '{tool_path}'. stdout: {sandbox_result.get('stdout', 'N/A')}")
+                            # Optionally log specific success if needed for sandbox execution
+                            # if self.notebook:
+                            #    self.notebook.log("sandbox_execution_success", {"plan": plan, "tool_path": tool_path, "sandbox_result_details": sandbox_result})
+
+                    except Exception as e_sandbox:
+                        sandbox_run_successful = False
+                        tb_sandbox = traceback.format_exc()
+                        fail_msg = f"Exception during sandbox execution of tool '{tool_path}': {str(e_sandbox)}\n{tb_sandbox}"
+                        self.logger.error(fail_msg)
+                        single_result["registration"] = {"success": False, "error": fail_msg, "exception_details": tb_sandbox}
+                        retry_later.append({"plan": plan, "reason": fail_msg, "details": "sandbox_exception"})
+                        results.append(single_result)
+                        if self.notebook: # Log specific exception event for sandbox
+                            self.notebook.log("sandbox_execution_exception", {
+                                "plan": plan, 
+                                "tool_path": tool_path, 
+                                "error": str(e_sandbox), 
+                                "traceback": tb_sandbox
+                            })
+                        continue # Skip to next plan, do not register
+                elif not tool_path and hasattr(self, 'sandbox_runner') and self.sandbox_runner:
+                    # Log if sandbox was skipped due to no tool_path, but don't mark as failure for this reason alone.
+                    self.logger.info(f"Sandbox execution skipped for plan {plan.get('name', 'N/A')} as tool_path is not available.")
+                
+                # If sandbox_run_successful is False due to an actual failure (handled by 'continue' above), 
+                # subsequent steps including registration will be skipped.
+                # --- END SANDBOX INTEGRATION ---
 
                 # --- AGI EXTENSION: Enhanced Validator Audit Logging ---\
                 # This audit log remains, it iterates self.VALIDATORS.
@@ -551,7 +622,7 @@ class SelfCodingEngine:
                             self.logger.debug(f"Validator '{validator_name}' exception during audit: {val_ex}")
 
                 # --- Dynamic import of tool module and class ---\
-                module_path = tool_path[:-3].replace("/", ".").replace("\\\\", ".") if tool_path and tool_path.endswith(".py") else (tool_path.replace("/", ".").replace("\\\\", ".") if tool_path else None)
+                module_path = tool_path[:-3].replace("/", ".").replace("\\\\", ".") if tool_path and tool_path.endswith(".py") else (tool_path.replace("/", ".").replace("\\\\", ".") if tool_path else None) # PEP 8 fix for long line
                 if not module_path:
                     raise ValueError(f"Cannot determine module path from tool_path: {tool_path}")
 
@@ -607,6 +678,7 @@ class SelfCodingEngine:
                     continue
 
                 # --- Register tool if requested ---\
+                # This is reached only if all prior checks, including sandbox, passed.
                 reg_result = self._register_tool(plan, tool_manager)
                 single_result["registration"] = reg_result
 
