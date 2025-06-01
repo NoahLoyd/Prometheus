@@ -27,7 +27,7 @@ class ModuleBuilderTool:
     }
     MODULE_TYPE_DIRS = {
         "tool": "tools/",
-        "test": "tests/",
+        "test": "test/",
         "validator": "validators/",
         "core": "core/",
     }
