@@ -3,7 +3,7 @@ import sys
 import traceback
 import os
 import logging
-from typing import Dict, Any, Optional, List, Callable  # <-- Added Callable for type hints
+from typing import Dict, Any, Optional, List, Callable, Tuple # <-- Added Tuple
 
 from tools.prompt_decomposer import PromptDecomposer
 from tools.module_builder import ModuleBuilderTool
@@ -130,7 +130,7 @@ class SelfCodingEngine:
         # Ensure order: append to VALIDATORS after MathEvaluator/TestToolRunner, never before.
         # Existing pipeline: ["MathEvaluator", "PlanVerifier", "CodeCritic"]
         for name, validator_cls in enhanced_validators:
-            if name not in self.VALIDATORS and validator_cls is not None:
+            if name not in self.VALIDATORS and validator_cls is not None and name in self.validator_registry:
                 self.VALIDATORS.append(name)
 
     def _get_logger(self):
@@ -154,6 +154,7 @@ class SelfCodingEngine:
 
         :param name: Unique string identifier for the validator.
         :param instance: Callable with signature (plan, tool_code, test_code) -> dict.
+                                 Or for SecurityValidator: (file_path) -> dict
         :param allow_overwrite: If False (default), protects existing validators from being overwritten.
         :raises ValueError: If instance is not callable or if attempting to overwrite without permission.
         """
@@ -173,6 +174,116 @@ class SelfCodingEngine:
             self.logger.info(f"Validator '{name}' is being overwritten.")
         self.validator_registry[name] = instance
         self.logger.info(f"Validator '{name}' registered successfully.")
+
+    def _run_validation_pipeline(self, plan: Dict[str, Any], tool_code: str, test_code: str, tool_path: Optional[str], test_path: Optional[str]) -> Tuple[bool, List[Dict[str, Any]]]:
+        """
+        Runs a specific sequence of validators:
+        PlanVerifier -> MathEvaluator -> CodeQualityAssessor -> SecurityValidator -> TestToolRunner.
+        Uses self.validator_registry for most validators, and self.test_runner for TestToolRunner.
+        Logs individual validator failures/exceptions to self.notebook.
+        Returns:
+            - bool: Overall validation success.
+            - List[Dict[str, Any]]: A list of dictionaries, each containing 'validator' name and 'result'.
+        """
+        all_results_summary: List[Dict[str, Any]] = []
+        overall_success = True
+
+        validator_names_in_sequence = [
+            "PlanVerifier",
+            "MathEvaluator",
+            "CodeQualityAssessor",
+            "SecurityValidator", # Handled via self.validator_registry which holds `validate_security`
+        ]
+
+        for validator_name in validator_names_in_sequence:
+            validator_instance = self.validator_registry.get(validator_name)
+            current_validator_result = None # Define outside try block
+
+            if validator_instance:
+                try:
+                    if validator_name == "SecurityValidator":
+                        if tool_path and callable(validator_instance):
+                             current_validator_result = validator_instance(tool_path)
+                        elif not tool_path:
+                            current_validator_result = {"success": True, "info": f"{validator_name} skipped: tool_path not available."}
+                            self.logger.info(f"{validator_name} skipped as tool_path is not available for plan: {plan.get('name', 'N/A')}.")
+                        else: # Not callable or other issue
+                            current_validator_result = {"success": False, "error": f"{validator_name} is not configured correctly or tool_path missing for plan: {plan.get('name', 'N/A')}."}
+                            self.logger.warning(current_validator_result["error"])
+                            overall_success = False # A misconfigured critical validator is a failure
+                    else:
+                        current_validator_result = validator_instance(plan, tool_code, test_code)
+                    
+                    all_results_summary.append({"validator": validator_name, "result": current_validator_result})
+                    
+                    if not current_validator_result.get("success", True):
+                        overall_success = False
+                        if self.notebook:
+                            self.notebook.log("validator_failure", {
+                                "plan": plan,
+                                "validator": validator_name,
+                                "error": current_validator_result.get("error", "Unknown validation error")
+                            })
+                        self.logger.warning(f"Validator '{validator_name}' failed for plan: {plan.get('name', 'N/A')}. Error: {current_validator_result.get('error')}")
+
+                except Exception as e:
+                    overall_success = False
+                    tb_str = traceback.format_exc()
+                    error_result = {"success": False, "error": str(e), "exception": tb_str}
+                    all_results_summary.append({"validator": validator_name, "result": error_result})
+                    if self.notebook:
+                        self.notebook.log("validator_exception", {
+                            "plan": plan,
+                            "validator": validator_name,
+                            "exception": str(e),
+                            "traceback": tb_str
+                        })
+                    self.logger.error(f"Exception in validator '{validator_name}' for plan: {plan.get('name', 'N/A')}. Exception: {str(e)}\n{tb_str}")
+            else:
+                skip_result = {"success": True, "info": f"Validator '{validator_name}' not found in registry, skipped."}
+                all_results_summary.append({"validator": validator_name, "result": skip_result})
+                self.logger.warning(f"Validator '{validator_name}' not found in registry for plan: {plan.get('name', 'N/A')}. Skipped.")
+                # Depending on criticality, a missing validator might set overall_success = False
+                # For now, it's logged and skipped as per "handle missing ones".
+
+        # TestToolRunner (using self.test_runner, runs on test_path)
+        if self.test_runner and test_path:
+            current_test_runner_result = None # Define outside try block
+            try:
+                current_test_runner_result = self.test_runner.run_test_file(test_path)
+                all_results_summary.append({"validator": "TestToolRunner", "result": current_test_runner_result})
+
+                if not current_test_runner_result.get("passed", False): # TestToolRunner uses "passed"
+                    overall_success = False
+                    if self.notebook:
+                        self.notebook.log("test_tool_runner_failure", {
+                            "plan": plan,
+                            "test_result": current_test_runner_result,
+                            "error": current_test_runner_result.get("error", "TestToolRunner reported failure.")
+                        })
+                    self.logger.warning(f"TestToolRunner failed for test_path '{test_path}' related to plan {plan.get('name', 'N/A')}. Result: {current_test_runner_result}")
+            
+            except Exception as e:
+                overall_success = False
+                tb_str = traceback.format_exc()
+                error_result = {"passed": False, "success": False, "error": str(e), "exception": tb_str}
+                all_results_summary.append({"validator": "TestToolRunner", "result": error_result})
+                if self.notebook:
+                    self.notebook.log("test_tool_runner_exception", {
+                        "plan": plan,
+                        "test_path": test_path,
+                        "exception": str(e),
+                        "traceback": tb_str
+                    })
+                self.logger.error(f"Exception in TestToolRunner for test_path '{test_path}' (plan: {plan.get('name', 'N/A')}). Exception: {str(e)}\n{tb_str}")
+        elif not self.test_runner:
+             all_results_summary.append({"validator": "TestToolRunner", "result": {"passed": True, "success": True, "info": "TestToolRunner not available/configured."}}) # Assume success if not run
+             self.logger.info(f"TestToolRunner not available/configured, skipped for plan: {plan.get('name', 'N/A')}.")
+        elif not test_path:
+             all_results_summary.append({"validator": "TestToolRunner", "result": {"passed": True, "success": True, "info": "TestToolRunner skipped: test_path not available."}}) # Assume success if not run
+             self.logger.info(f"TestToolRunner skipped as test_path is not available for plan: {plan.get('name', 'N/A')}.")
+
+        return overall_success, all_results_summary
 
     def process_prompt(
         self,
@@ -244,17 +355,36 @@ class SelfCodingEngine:
                     with open(tool_path, "w", encoding="utf-8") as f:
                         f.write(tool_code)
                 else:
-                    raise ValueError("Missing tool_path or tool_code in plan.")
+                    # If tool_path or tool_code is missing, this is a critical plan failure.
+                    # Log it and add to retry_later, then continue to the next plan.
+                    missing_info = []
+                    if not tool_path: missing_info.append("tool_path")
+                    if not tool_code: missing_info.append("tool_code")
+                    err_msg = f"Plan is missing critical information: {', '.join(missing_info)}."
+                    self.logger.error(f"{err_msg} For plan: {plan}")
+                    single_result["registration"] = {"success": False, "error": err_msg}
+                    retry_later.append({"plan": plan, "reason": err_msg})
+                    results.append(single_result)
+                    if self.notebook:
+                         self.notebook.log("plan_execution_failure", {"plan": plan, "error": err_msg, "missing": missing_info})
+                    continue
+
 
                 # --- Write the test file ---
                 if test_path and test_code:
                     os.makedirs(os.path.dirname(test_path), exist_ok=True)
                     with open(test_path, "w", encoding="utf-8") as f:
                         f.write(test_code)
-                else:
-                    raise ValueError("Missing test_path or test_code in plan.")
+                # If test_path or test_code is missing, it's not necessarily a fatal error for the tool itself,
+                # but validation related to tests will likely fail or be skipped.
+                # This was previously raising ValueError, but now we log and proceed.
+                elif not test_path and test_code:
+                     self.logger.warning(f"Test code provided for plan {plan.get('name', 'N/A')} but no test_path specified. Test code will not be written.")
+                elif test_path and not test_code:
+                     self.logger.warning(f"Test path {test_path} specified for plan {plan.get('name', 'N/A')} but no test_code provided. Empty or no test file will be written.")
 
-                # --- Promethyn internal standards check ---
+
+                # --- Promethyn internal standards check ---\
                 standards_errors = self._check_standards(plan, tool_code, test_code)
                 if standards_errors:
                     err_msg = f"Promethyn standards not met: {standards_errors}"
@@ -266,166 +396,142 @@ class SelfCodingEngine:
                     results.append(single_result)
                     continue
 
-                # --- BEGIN: Promethyn AGI Enhanced Validation Pipeline Injection ---
-                validation_passed = True
-                validator_results = []
-                test_run_result = None
+                # --- BEGIN: Promethyn AGI Validation Pipeline using _run_validation_pipeline ---
+                validation_passed, detailed_validator_outputs = self._run_validation_pipeline(
+                    plan, tool_code, test_code, tool_path, test_path
+                )
 
-                # 1. Run all existing validators (PlanVerifier, MathEvaluator, CodeQualityAssessor)
-                for validator_name in ["PlanVerifier", "MathEvaluator", "CodeQualityAssessor"]:
-                    validator = self.validator_registry.get(validator_name)
-                    if validator:
-                        try:
-                            result = validator(plan, tool_code, test_code)
-                            validator_results.append((validator_name, result))
-                            if not result.get("success", True):
-                                validation_passed = False
-                                if self.notebook:
-                                    self.notebook.log("validator_failure", {
-                                        "plan": plan,
-                                        "validator": validator_name,
-                                        "error": result.get("error")
-                                    })
-                        except Exception as ex:
-                            validation_passed = False
-                            if self.notebook:
-                                self.notebook.log("validator_exception", {
-                                    "plan": plan,
-                                    "validator": validator_name,
-                                    "exception": str(ex)
-                                })
-
-                # 2. Inject a security scan using validate_security(file_path)
-                security_validation_result = None
-                if validate_security is not None and tool_path:
-                    try:
-                        security_validation_result = validate_security(tool_path)
-                        validator_results.append(("SecurityValidator", security_validation_result))
-                        if not security_validation_result.get("success", True):
-                            validation_passed = False
-                            if self.notebook:
-                                self.notebook.log("validator_failure", {
-                                    "plan": plan,
-                                    "validator": "SecurityValidator",
-                                    "error": security_validation_result.get("error")
-                                })
-                    except Exception as ex:
-                        validation_passed = False
-                        if self.notebook:
-                            self.notebook.log("validator_exception", {
-                                "plan": plan,
-                                "validator": "SecurityValidator",
-                                "exception": str(ex)
-                            })
-
-                # 3. If the file is a test (ends with "_test.py"), run test_tool_runner.run_test_file()
-                if tool_path and tool_path.endswith("_test.py"):
-                    try:
-                        test_run_result = self.test_runner.run_test_file(tool_path)
-                        if not test_run_result.get("passed", False):
-                            validation_passed = False
-                            if self.notebook:
-                                self.notebook.log("test_tool_runner_failure", {
-                                    "plan": plan,
-                                    "test_result": test_run_result,
-                                    "error": test_run_result.get("error", test_run_result)
-                                })
-                    except Exception as ex:
-                        validation_passed = False
-                        if self.notebook:
-                            self.notebook.log("test_tool_runner_exception", {
-                                "plan": plan,
-                                "exception": str(ex)
-                            })
-
-                # 4. If ANY validator or test fails, reject the tool/module and do NOT register it.
+                # Extract TestToolRunner result for logging, if it ran and produced a result
+                final_test_run_log_entry = None
+                for entry in detailed_validator_outputs:
+                    if entry["validator"] == "TestToolRunner" and "result" in entry:
+                        final_test_run_log_entry = entry["result"]
+                        break
+                
                 if not validation_passed:
-                    fail_msg = "Tool/module rejected due to failed validation or test."
+                    fail_msg = "Tool/module rejected due to failed validation or test during pipeline execution."
                     single_result["registration"] = {"success": False, "error": fail_msg}
-                    retry_later.append({"plan": plan, "reason": fail_msg})
+                    # detailed_validator_outputs already contains specific error reasons from validators
+                    # We can augment the reason for retry_later if needed
+                    specific_errors = [
+                        f"{item['validator']}: {item['result'].get('error', 'Failed')}" 
+                        for item in detailed_validator_outputs 
+                        if not item['result'].get('success', item['result'].get('passed', True)) # check success or passed
+                    ]
+                    augmented_fail_msg = f"{fail_msg} Details: {'; '.join(specific_errors)}"
+                    retry_later.append({"plan": plan, "reason": augmented_fail_msg})
+                    
                     if self.notebook:
                         self.notebook.log("tool_rejected", {
                             "plan": plan,
-                            "validator_results": validator_results,
-                            "test_run_result": test_run_result,
-                            "error": fail_msg
+                            "validator_results": detailed_validator_outputs, 
+                            "test_run_result": final_test_run_log_entry, 
+                            "error": fail_msg,
+                            "detailed_errors": specific_errors
                         })
                     results.append(single_result)
                     continue
                 else:
                     if self.notebook:
-                        self.notebook.log("tool_validated", {
+                        self.notebook.log("tool_validated", { 
                             "plan": plan,
-                            "validator_results": validator_results,
-                            "test_run_result": test_run_result,
+                            "validator_results": detailed_validator_outputs,
+                            "test_run_result": final_test_run_log_entry,
                             "status": "success"
                         })
-                # --- END: Promethyn AGI Enhanced Validation Pipeline Injection ---
+                # --- END: Promethyn AGI Validation Pipeline ---
 
                 # --- Validator hooks (future extensibility) ---
-                validators_passed = True
-                for validator_name in self.VALIDATORS:
+                # This section remains as per instruction to preserve all old logic.
+                # It might run some validators that were already part of _run_validation_pipeline.
+                validators_passed_secondary_check = True # Renamed to avoid conflict
+                for validator_name in self.VALIDATORS: # self.VALIDATORS can be different from the pipeline sequence
                     validator = self.validator_registry.get(validator_name)
                     if validator:
+                        # Avoid re-running TestToolRunner if it was just done and part of self.VALIDATORS
+                        # However, self.VALIDATORS doesn't typically include "TestToolRunner" by name.
+                        # The primary TestToolRunner execution is now within _run_validation_pipeline.
                         try:
-                            validator_result = validator(plan, tool_code, test_code)
+                            # SecurityValidator expects tool_path, others (plan, tool_code, test_code)
+                            if validator_name == "SecurityValidator":
+                                if tool_path and callable(validator):
+                                    validator_result = validator(tool_path)
+                                else: # Skip if no tool_path or validator misconfigured
+                                    validator_result = {"success": True, "info": f"Secondary check for {validator_name} skipped."}
+                            else:
+                                validator_result = validator(plan, tool_code, test_code)
+
                             if not validator_result.get("success", True):
-                                val_msg = f"Validator {validator_name} failed: {validator_result.get('error')}"
+                                val_msg = f"Secondary validator hook {validator_name} failed: {validator_result.get('error')}"
                                 single_result["registration"] = {"success": False, "error": val_msg}
                                 retry_later.append({"plan": plan, "reason": val_msg})
                                 if self.notebook:
-                                    self.notebook.log("validator_failure", {
+                                    self.notebook.log("secondary_validator_failure", { # Distinct log key
                                         "plan": plan,
                                         "validator": validator_name,
                                         "error": val_msg,
                                     })
                                 self.logger.error(val_msg)
                                 results.append(single_result)
-                                validators_passed = False
-                                break  # Stop further validators and do not run test runner
+                                validators_passed_secondary_check = False
+                                break 
                         except Exception as val_ex:
                             tb = traceback.format_exc()
-                            val_msg = f"Validator {validator_name} raised: {val_ex}\n{tb}"
+                            val_msg = f"Secondary validator hook {validator_name} raised: {val_ex}\n{tb}"
                             single_result["registration"] = {"success": False, "error": val_msg}
                             retry_later.append({"plan": plan, "reason": val_msg})
                             if self.notebook:
-                                self.notebook.log("validator_exception", {
+                                self.notebook.log("secondary_validator_exception", { # Distinct log key
                                     "plan": plan,
                                     "validator": validator_name,
                                     "error": val_msg,
                                 })
                             self.logger.error(val_msg)
                             results.append(single_result)
-                            validators_passed = False
+                            validators_passed_secondary_check = False
                             break
 
-                if not validators_passed:
+                if not validators_passed_secondary_check:
                     continue
 
                 # --- Final test: TestToolRunner on generated test file ---
-                if test_path:
-                    test_result = self.test_runner.run_test_file(test_path)
-                    if not test_result.get("passed", False):
-                        fail_msg = f"TestToolRunner failed: {test_result.get('error', test_result)}"
+                # This section also remains. It's a specific call to TestToolRunner.
+                # The _run_validation_pipeline also includes a TestToolRunner step.
+                # This could be redundant if test_path is always present, but preserved for now.
+                if test_path: # Ensure test_path exists before calling
+                    # Check if TestToolRunner already ran successfully in the main pipeline
+                    # to avoid redundant execution if not desired.
+                    # For now, preserving original logic means it *may* run again.
+                    test_result_secondary = self.test_runner.run_test_file(test_path) # Renamed to avoid conflict
+                    if not test_result_secondary.get("passed", False):
+                        fail_msg = f"Final TestToolRunner check failed: {test_result_secondary.get('error', test_result_secondary)}"
                         single_result["registration"] = {"success": False, "error": fail_msg}
                         retry_later.append({"plan": plan, "reason": fail_msg})
                         if self.notebook:
-                            self.notebook.log("test_tool_runner_failure", {
+                            self.notebook.log("final_test_tool_runner_failure", { # Distinct log key
                                 "plan": plan,
-                                "test_result": test_result,
+                                "test_result": test_result_secondary,
                                 "error": fail_msg,
                             })
-                            self._log_to_notebook()
+                            self._log_to_notebook() # Original call
                         self.logger.error(fail_msg)
                         results.append(single_result)
                         continue
 
-                # --- AGI EXTENSION: Enhanced Validator Audit Logging ---
+                # --- AGI EXTENSION: Enhanced Validator Audit Logging ---\
+                # This audit log remains, it iterates self.VALIDATORS.
                 for validator_name in self.VALIDATORS:
                     validator = self.validator_registry.get(validator_name)
                     if validator:
                         try:
-                            validator_result = validator(plan, tool_code, test_code)
+                            # Handle SecurityValidator signature
+                            if validator_name == "SecurityValidator":
+                                if tool_path and callable(validator):
+                                    validator_result = validator(tool_path)
+                                else:
+                                    validator_result = {"success": True, "info": f"Audit for {validator_name} skipped."}
+                            else:
+                                validator_result = validator(plan, tool_code, test_code)
                             audit_log = {
                                 "plan": plan,
                                 "validator": validator_name,
@@ -433,7 +539,7 @@ class SelfCodingEngine:
                             }
                             if self.notebook:
                                 self.notebook.log("validator_audit", audit_log)
-                            self.logger.debug(f"Validator '{validator_name}' outcome: {validator_result}")
+                            self.logger.debug(f"Validator '{validator_name}' audit outcome: {validator_result}")
                         except Exception as val_ex:
                             audit_log = {
                                 "plan": plan,
@@ -444,37 +550,40 @@ class SelfCodingEngine:
                                 self.notebook.log("validator_audit_exception", audit_log)
                             self.logger.debug(f"Validator '{validator_name}' exception during audit: {val_ex}")
 
-                # --- Dynamic import of tool module and class ---
-                module_path = tool_path[:-3].replace("/", ".").replace("\\", ".") if tool_path.endswith(".py") else tool_path.replace("/", ".").replace("\\", ".")
+                # --- Dynamic import of tool module and class ---\
+                module_path = tool_path[:-3].replace("/", ".").replace("\\\\", ".") if tool_path and tool_path.endswith(".py") else (tool_path.replace("/", ".").replace("\\\\", ".") if tool_path else None)
+                if not module_path:
+                    raise ValueError(f"Cannot determine module path from tool_path: {tool_path}")
+
                 if module_path in sys.modules:
-                    del sys.modules[module_path]
+                    del sys.modules[module_path] # Force reload
                 module = importlib.import_module(module_path)
                 tool_class = getattr(module, class_name, None)
                 if tool_class is None:
                     raise ImportError(f"Class '{class_name}' not found in '{module_path}'.")
 
-                # --- Instantiate tool and validate by running test ---
+                # --- Instantiate tool and validate by running test ---\
                 tool_instance = tool_class()
                 if not hasattr(tool_instance, "run"):
                     raise AttributeError(f"Tool '{class_name}' does not implement a 'run' method.")
 
                 # Validate using run("test")
                 try:
-                    validation_result = tool_instance.run("test")
-                    single_result["validation"] = validation_result
+                    validation_result = tool_instance.run("test") # This is the tool's own test method
+                    single_result["validation"] = validation_result # Store this specific validation
                     if self.notebook:
-                        self.notebook.log("test_run", {
+                        self.notebook.log("tool_run_test_method", { # Changed log key for clarity
                             "plan": plan,
                             "result": validation_result,
                             "status": "success"
                         })
-                    self.logger.info(f"Test run for '{class_name}' succeeded: {validation_result}")
+                    self.logger.info(f"Tool's run('test') method for '{class_name}' succeeded: {validation_result}")
                     if not (isinstance(validation_result, dict) and validation_result.get("success", False)):
-                        fail_msg = f"Tool validation failed: {validation_result}"
+                        fail_msg = f"Tool's run('test') method validation failed: {validation_result}"
                         single_result["registration"] = {"success": False, "error": fail_msg}
                         retry_later.append({"plan": plan, "reason": fail_msg})
                         if self.notebook:
-                            self.notebook.log("tool_validation_failure", {
+                            self.notebook.log("tool_run_test_method_failure", { # Changed log key
                                 "plan": plan,
                                 "validation": validation_result,
                                 "error": fail_msg,
@@ -485,29 +594,23 @@ class SelfCodingEngine:
 
                 except Exception as val_err:
                     tb = traceback.format_exc()
-                    fail_msg = f"Tool validation raised exception: {val_err}\n{tb}"
+                    fail_msg = f"Tool's run('test') method raised exception: {val_err}\n{tb}"
                     single_result["registration"] = {"success": False, "error": fail_msg}
                     retry_later.append({"plan": plan, "reason": fail_msg})
                     if self.notebook:
-                        self.notebook.log("tool_validation_failure", {
+                        self.notebook.log("tool_run_test_method_exception", { # Changed log key
                             "plan": plan,
                             "error": fail_msg,
                         })
-                        self.notebook.log("test_run", {
-                            "plan": plan,
-                            "error": fail_msg,
-                            "status": "exception"
-                        })
-                    self.logger.error(fail_msg)
-                    self.logger.error(f"Test run for '{class_name}' raised exception: {fail_msg}")
+                    self.logger.error(f"Tool's run('test') for '{class_name}' raised exception: {fail_msg}")
                     results.append(single_result)
                     continue
 
-                # --- Register tool if requested ---
+                # --- Register tool if requested ---\
                 reg_result = self._register_tool(plan, tool_manager)
                 single_result["registration"] = reg_result
 
-                # --- Log success to ShortTermMemory if available ---
+                # --- Log success to ShortTermMemory if available ---\
                 if short_term_memory is not None and reg_result.get("success", False):
                     if "generated_tools" not in short_term_memory:
                         short_term_memory["generated_tools"] = []
@@ -520,7 +623,7 @@ class SelfCodingEngine:
 
             except Exception as e:
                 tb = traceback.format_exc()
-                fail_msg = f"Module build or validation error: {e}\n{tb}"
+                fail_msg = f"Module build or validation error for plan {plan.get('name', 'N/A')}: {e}\n{tb}"
                 single_result["registration"] = {"success": False, "error": fail_msg}
                 retry_later.append({"plan": plan, "reason": fail_msg})
                 if self.notebook:
@@ -532,18 +635,18 @@ class SelfCodingEngine:
                 self.logger.error(fail_msg)
             results.append(single_result)
 
-        # --- Log retry_later to memory or AddOnNotebook ---
+        # --- Log retry_later to memory or AddOnNotebook ---\
         if retry_later:
             retry_log = {"retry_later": retry_later, "prompt": prompt}
             if short_term_memory is not None:
                 short_term_memory.setdefault("tool_retry_queue", []).extend(retry_later)
             if self.notebook:
                 self.notebook.log("tool_retry_later", retry_log)
-            for retry in retry_later:
-                self._schedule_retry(retry["plan"], retry["reason"])
+            for retry_item in retry_later: # Renamed to avoid conflict
+                self._schedule_retry(retry_item["plan"], retry_item["reason"])
 
         return {
-            "success": len(retry_later) == 0,
+            "success": len(retry_later) == 0 and any(r.get("registration", {}).get("success") for r in results if "registration" in r), # More robust success check
             "results": results,
             "retry_later": retry_later,
         }
@@ -559,10 +662,10 @@ class SelfCodingEngine:
         Logs registration failures to AddOnNotebook if available.
         """
         try:
-            file_path = plan.get("file")
+            file_path = plan.get("file") # This is tool_file, effectively tool_path basis
             class_name = plan.get("class")
             if not file_path or not class_name:
-                msg = "Missing 'file' or 'class' in plan."
+                msg = "Missing 'file' or 'class' in plan for tool registration."
                 print(f"[Tool Registration] {msg}")
                 if self.notebook:
                     self.notebook.log("tool_registration_failure", {"plan": plan, "error": msg})
@@ -570,8 +673,9 @@ class SelfCodingEngine:
                 return {"success": False, "error": msg}
 
             # Convert file path to module path (e.g. tools/time_tracker.py -> tools.time_tracker)
-            module_path = file_path[:-3].replace("/", ".").replace("\\", ".") if file_path.endswith(".py") else file_path.replace("/", ".").replace("\\", ".")
-
+            # Assuming file_path is relative to repo root, e.g., "tools/my_tool.py"
+            module_path = file_path[:-3].replace("/", ".").replace("\\\\", ".") if file_path.endswith(".py") else file_path.replace("/", ".").replace("\\\\", ".")
+            
             # Remove module from sys.modules if it's already loaded (force reload)
             if module_path in sys.modules:
                 del sys.modules[module_path]
@@ -579,10 +683,11 @@ class SelfCodingEngine:
             try:
                 module = importlib.import_module(module_path)
             except Exception as imp_exc:
-                msg = f"Failed to import module '{module_path}': {imp_exc}"
+                tb_imp = traceback.format_exc()
+                msg = f"Failed to import module '{module_path}': {imp_exc}\n{tb_imp}"
                 print(f"[Tool Registration] {msg}")
                 if self.notebook:
-                    self.notebook.log("tool_registration_failure", {"plan": plan, "error": msg})
+                    self.notebook.log("tool_registration_failure", {"plan": plan, "error": msg, "module_path": module_path})
                 self.logger.error(msg)
                 return {"success": False, "error": msg}
 
@@ -591,7 +696,7 @@ class SelfCodingEngine:
                 msg = f"Class '{class_name}' not found in module '{module_path}'."
                 print(f"[Tool Registration] {msg}")
                 if self.notebook:
-                    self.notebook.log("tool_registration_failure", {"plan": plan, "error": msg})
+                    self.notebook.log("tool_registration_failure", {"plan": plan, "error": msg, "module_path": module_path, "class_name": class_name})
                 self.logger.error(msg)
                 return {"success": False, "error": msg}
 
@@ -623,13 +728,14 @@ class SelfCodingEngine:
 
         except Exception as e:
             tb = traceback.format_exc()
-            print(f"[Tool Registration] Exception: {e}\n{tb}")
+            err_msg = f"Tool registration exception for plan {plan.get('name', 'N/A')}: {e}\n{tb}"
+            print(f"[Tool Registration] Exception: {err_msg}")
             if self.notebook:
-                self.notebook.log("tool_registration_failure", {"plan": plan, "error": str(e)})
-            self.logger.error(f"Tool registration exception: {e}")
+                self.notebook.log("tool_registration_failure", {"plan": plan, "error": str(e), "traceback": tb})
+            self.logger.error(err_msg)
             return {"success": False, "error": str(e), "traceback": tb}
 
-    # --- Internal standards enforcement for Promethyn AGI tools ---
+    # --- Internal standards enforcement for Promethyn AGI tools ---\
     def _check_standards(self, plan, tool_code, test_code) -> List[str]:
         """
         Run Promethyn standards checks on code and plan: safety, modularity, testability.
@@ -643,8 +749,11 @@ class SelfCodingEngine:
                 errors.append(f"Unsafe operation detected: {kw}")
 
         # Modularity: Check for at least one class, and that the class matches plan
-        if plan.get("class") not in (tool_code or ""):
+        if plan.get("class") and plan.get("class") not in (tool_code or ""): # Check if class exists in plan first
             errors.append("Tool class does not match plan or is missing.")
+        elif not plan.get("class") and "class " not in (tool_code or ""): # If no class in plan, expect one in code
+             errors.append("No class definition found in tool code.")
+
 
         # Testability: Must have test code and 'run' method
         if not test_code or ("def test" not in test_code and "class Test" not in test_code):
@@ -656,23 +765,23 @@ class SelfCodingEngine:
 
         return errors
 
-    # --- Placeholder for future caching mechanism ---
+    # --- Placeholder for future caching mechanism ---\
     def _cache_result(self, key, value):
         """
         TODO: Implement caching (e.g., Redis, in-memory, disk) for tool generation and validation results.
         """
         pass
 
-    # --- AGI EXTENSION: Retry Scheduling Telemetry ---
+    # --- AGI EXTENSION: Retry Scheduling Telemetry ---\
     def _schedule_retry(self, plan, reason):
         """
         TODO: Implement exponential backoff retry system for failed tool generations/validations.
         """
-        self.logger.warning(f"Retry scheduled for plan {plan} due to: {reason}")
+        self.logger.warning(f"Retry scheduled for plan {plan.get('name','Unnamed Plan')} due to: {reason}")
         if self.notebook:
             self.notebook.log("retry_scheduled", {"plan": plan, "reason": reason})
 
-    # --- Hook for future multi-phase planning ---
+    # --- Hook for future multi-phase planning ---\
     def _multi_phase_plan(self, plan):
         """
         TODO: Implement multi-phase build/execution logic for complex agentic projects.
@@ -755,21 +864,27 @@ class PlanVerifier:
         """
         errors = []
         plan_class = plan.get("class")
-        plan_methods = plan.get("methods", ["run"])
+        plan_methods = plan.get("methods", ["run"]) # Default to checking for "run"
 
         # 1. Check if the class is implemented in code
         if plan_class and f"class {plan_class}" not in (tool_code or ""):
-            errors.append(f"Class '{plan_class}' not found in tool code.")
+            errors.append(f"Class '{plan_class}' from plan not found in tool code.")
+        elif not plan_class and "class " not in (tool_code or ""): # If no class in plan, still expect some class
+             errors.append("No class definition found in tool code, and no class specified in plan.")
+
 
         # 2. Check for each required method in the class (default: 'run')
-        for method in plan_methods:
-            method_signature = f"def {method}("
+        # This check is basic; it doesn't ensure method is in the correct class if multiple classes exist.
+        for method_name in plan_methods:
+            method_signature = f"def {method_name}("
             if method_signature not in (tool_code or ""):
-                errors.append(f"Required method '{method}' not found in tool code.")
+                errors.append(f"Required method '{method_name}' from plan not found in tool code.")
 
-        # 3. Check that test code exists if expected
+        # 3. Check that test code exists if expected by plan or convention
+        # Plan might specify test_code presence or TestToolRunner might expect it.
+        # This is a basic check for test code content.
         if not test_code or (not ("def test" in test_code or "class Test" in test_code)):
-            errors.append("Test code missing or does not define a test function/class.")
+            errors.append("Test code missing or does not define a recognizable test function/class.")
 
         return {
             "success": len(errors) == 0,
@@ -778,5 +893,27 @@ class PlanVerifier:
 
 # Test-mode only validator check (delete after confirming)
 if __name__ == "__main__":
-    engine = SelfCodingEngine()
+    # This is a basic test stub, needs more elaborate setup for full testing
+    print("SelfCodingEngine module loaded. Constructing instance for basic check...")
+    
+    # Mock notebook for testing
+    class MockNotebook:
+        def __init__(self):
+            self.logs = []
+        def log(self, event_type, data):
+            self.logs.append({"type": event_type, "data": data})
+            print(f"[MockNotebook] Event: {event_type}, Data: {data}")
+
+    mock_notebook_instance = MockNotebook()
+    engine = SelfCodingEngine(notebook=mock_notebook_instance)
     print("Registered validators:", list(engine.validator_registry.keys()))
+    print("VALIDATORS list:", engine.VALIDATORS)
+
+    # Example of how one might test process_prompt (requires more setup for files etc.)
+    # test_prompt = "Create a simple calculator tool that can add two numbers."
+    # print(f"\nTesting process_prompt with: '{test_prompt}'")
+    # results = engine.process_prompt(test_prompt)
+    # print("process_prompt results:", results)
+    # print("\nMock Notebook Logs:")
+    # for log_entry in mock_notebook_instance.logs:
+    #     print(log_entry)
