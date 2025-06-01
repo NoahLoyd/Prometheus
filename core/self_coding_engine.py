@@ -13,6 +13,19 @@ from addons.notebook import AddOnNotebook
 from tools.test_tool_runner import TestToolRunner  # <--- NEW IMPORT
 from core.validators.extended_validators import register_validators
 
+# --- BEGIN: Fallback Validator Import System ---
+VALIDATOR_PATHS = ["validators", "core.validators"]
+
+def import_validator(name):
+    import importlib
+    for base in VALIDATOR_PATHS:
+        try:
+            return importlib.import_module(f"{base}.{name}")
+        except ImportError:
+            continue
+    return None
+# --- END: Fallback Validator Import System ---
+
 # --- Begin: Imports for new validator modules ---
 try:
     from core.validators.code_quality_assessor import CodeQualityAssessor
