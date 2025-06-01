@@ -16,6 +16,31 @@ class SandboxTimeout(Exception):
     pass
 
 
+class SandboxPool:
+    """
+    Controls concurrent access to sandbox resources using a semaphore.
+    """
+    def __init__(self, max_concurrent: int):
+        self.semaphore = threading.Semaphore(max_concurrent)
+        logger.info(f"Initialized SandboxPool with {max_concurrent} concurrent slots")
+    
+    def acquire(self):
+        """Acquire a sandbox slot"""
+        acquired = self.semaphore.acquire(blocking=True)
+        if acquired:
+            logger.debug("Acquired sandbox slot")
+        return acquired
+    
+    def release(self):
+        """Release a sandbox slot"""
+        self.semaphore.release()
+        logger.debug("Released sandbox slot")
+
+
+# Global sandbox pool instance with 5 concurrent slots
+sandbox_pool = SandboxPool(5)
+
+
 def _set_resource_limits(cpu_time_limit: int, memory_limit_mb: int) -> None:
     """
     Set resource limits for the child process.
@@ -85,20 +110,28 @@ def _run_with_limits(
             proc_result["exit_code"] = -2
             proc_result["success"] = False
 
-    thread_result: Dict[str, Any] = {}
-    thread = threading.Thread(target=target, args=(thread_result,))
-    thread.start()
-    thread.join(timeout + 2)  # Give extra time to finish cleanup
+    try:
+        # Acquire a sandbox slot before starting execution
+        sandbox_pool.acquire()
+        
+        thread_result: Dict[str, Any] = {}
+        thread = threading.Thread(target=target, args=(thread_result,))
+        thread.start()
+        thread.join(timeout + 2)  # Give extra time to finish cleanup
 
-    if not thread_result:
-        logger.error("Threaded sandbox execution failed: no result captured.")
-        result["stderr"] = "Sandbox execution failed: no result captured"
-        result["exit_code"] = -3
-        result["success"] = False
+        if not thread_result:
+            logger.error("Threaded sandbox execution failed: no result captured.")
+            result["stderr"] = "Sandbox execution failed: no result captured"
+            result["exit_code"] = -3
+            result["success"] = False
+            return result
+
+        result.update(thread_result)
         return result
-
-    result.update(thread_result)
-    return result
+    
+    finally:
+        # Always release the sandbox slot
+        sandbox_pool.release()
 
 
 def run_python_file_in_sandbox(
