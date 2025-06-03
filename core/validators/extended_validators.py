@@ -7,6 +7,7 @@ import tempfile
 from typing import Optional, Dict, Any
 from core.utils.path_utils import safe_path_join
 from core.utils.validator_importer import import_validator
+from addons.notebook import AddOnNotebook
 
 logger = logging.getLogger("promethyn.validators")
 logging.basicConfig(level=logging.INFO)
@@ -22,7 +23,8 @@ class CodeQualityAssessor:
     MAX_FUNCTION_LENGTH = 40  # lines
     DUPLICATE_THRESHOLD = 10  # lines
 
-    def __init__(self):
+    def __init__(self, notebook: Optional[AddOnNotebook] = None):
+        self.notebook = notebook
         self.pylint = self._import_linter('pylint.lint')
         self.flake8 = self._import_linter('flake8.main.application')
 
@@ -33,11 +35,17 @@ class CodeQualityAssessor:
         return None
 
     def validate(self, code: str) -> Dict[str, Optional[str]]:
+        if self.notebook:
+            self.notebook.log("code_quality_assessor", "VALIDATION_START", "Starting code quality assessment", metadata={"code_length": len(code)})
+        
         try:
             tree = ast.parse(code)
         except SyntaxError as e:
-            logger.error(f"Syntax error: {e}")
-            return {'success': False, 'error': f"Syntax error: {e}"}
+            error_msg = f"Syntax error: {e}"
+            logger.error(error_msg)
+            if self.notebook:
+                self.notebook.log("code_quality_assessor", "SYNTAX_ERROR", error_msg, metadata={"error": str(e)})
+            return {'success': False, 'error': error_msg}
 
         issues = []
 
@@ -48,14 +56,27 @@ class CodeQualityAssessor:
                 end = max(getattr(child, 'end_lineno', start) for child in ast.walk(node))
                 length = end - start + 1
                 if length > self.MAX_FUNCTION_LENGTH:
-                    issues.append(f"Function '{node.name}' is too long ({length} lines).")
+                    issue = f"Function '{node.name}' is too long ({length} lines)."
+                    issues.append(issue)
+                    if self.notebook:
+                        self.notebook.log("code_quality_assessor", "LONG_FUNCTION", issue, metadata={
+                            "function_name": node.name,
+                            "length": length,
+                            "max_allowed": self.MAX_FUNCTION_LENGTH
+                        })
 
         # Check for duplicate code (simple substring method)
         code_lines = code.splitlines()
         for i in range(len(code_lines) - self.DUPLICATE_THRESHOLD):
             snippet = '\n'.join(code_lines[i:i+self.DUPLICATE_THRESHOLD])
             if code.count(snippet) > 1:
-                issues.append("Duplicate code detected.")
+                issue = "Duplicate code detected."
+                issues.append(issue)
+                if self.notebook:
+                    self.notebook.log("code_quality_assessor", "DUPLICATE_CODE", issue, metadata={
+                        "start_line": i + 1,
+                        "snippet_length": self.DUPLICATE_THRESHOLD
+                    })
                 break
 
         # Optionally run linter
@@ -73,8 +94,16 @@ class CodeQualityAssessor:
                     results = Run([tf.name], do_exit=False)
                     if results.linter.msg_status != 0:
                         linter_report = "Pylint flagged issues."
+                        if self.notebook:
+                            self.notebook.log("code_quality_assessor", "PYLINT_ISSUES", linter_report, metadata={
+                                "temp_file": tf.name,
+                                "msg_status": results.linter.msg_status
+                            })
             except Exception as e:
-                logger.warning(f"Pylint integration failed: {e}")
+                error_msg = f"Pylint integration failed: {e}"
+                logger.warning(error_msg)
+                if self.notebook:
+                    self.notebook.log("code_quality_assessor", "PYLINT_ERROR", error_msg, metadata={"error": str(e)})
         elif self.flake8:
             try:
                 from flake8.main.application import Application
@@ -88,16 +117,35 @@ class CodeQualityAssessor:
                     app.run([tf.name])
                     if app.result_count > 0:
                         linter_report = "Flake8 flagged issues."
+                        if self.notebook:
+                            self.notebook.log("code_quality_assessor", "FLAKE8_ISSUES", linter_report, metadata={
+                                "temp_file": tf.name,
+                                "result_count": app.result_count
+                            })
             except Exception as e:
-                logger.warning(f"Flake8 integration failed: {e}")
+                error_msg = f"Flake8 integration failed: {e}"
+                logger.warning(error_msg)
+                if self.notebook:
+                    self.notebook.log("code_quality_assessor", "FLAKE8_ERROR", error_msg, metadata={"error": str(e)})
 
         if linter_report:
             issues.append(linter_report)
 
         if issues:
+            error_msg = "; ".join(issues)
             logger.info(f"Code quality failed: {issues}")
-            return {'success': False, 'error': "; ".join(issues)}
-        logger.info("Code quality check passed.")
+            if self.notebook:
+                self.notebook.log("code_quality_assessor", "VALIDATION_FAILED", f"Code quality assessment failed", metadata={
+                    "issues": issues,
+                    "issue_count": len(issues),
+                    "error": error_msg
+                })
+            return {'success': False, 'error': error_msg}
+        
+        success_msg = "Code quality check passed."
+        logger.info(success_msg)
+        if self.notebook:
+            self.notebook.log("code_quality_assessor", "VALIDATION_PASSED", success_msg, metadata={"code_length": len(code)})
         return {'success': True, 'error': None}
 
 
@@ -119,34 +167,63 @@ class SecurityScanner:
         r'eval\s*\(',
     ]
 
+    def __init__(self, notebook: Optional[AddOnNotebook] = None):
+        self.notebook = notebook
+
     def validate(self, code: str) -> Dict[str, Optional[str]]:
+        if self.notebook:
+            self.notebook.log("security_scanner", "VALIDATION_START", "Starting security scan", metadata={"code_length": len(code)})
+        
         issues = []
 
         # Insecure imports and risky built-ins
         for risky in self.RISKY_BUILTINS:
             if risky in code:
-                issues.append(f"Risky builtin or import detected: {risky}")
+                issue = f"Risky builtin or import detected: {risky}"
+                issues.append(issue)
+                if self.notebook:
+                    self.notebook.log("security_scanner", "RISKY_BUILTIN", issue, metadata={"risky_item": risky})
 
         # Hardcoded credentials
         for pattern in self.CREDENTIAL_PATTERNS:
             if re.search(pattern, code, flags=re.IGNORECASE):
-                issues.append("Hardcoded credentials detected.")
+                issue = "Hardcoded credentials detected."
+                issues.append(issue)
+                if self.notebook:
+                    self.notebook.log("security_scanner", "HARDCODED_CREDENTIALS", issue, metadata={"pattern": pattern})
 
         # Open ports
         for match in re.finditer(self.OPEN_PORT_PATTERN, code):
             port = int(match.group(1))
             if port > 0 and port < 65536:
-                issues.append(f"Open port detected: {port}")
+                issue = f"Open port detected: {port}"
+                issues.append(issue)
+                if self.notebook:
+                    self.notebook.log("security_scanner", "OPEN_PORT", issue, metadata={"port": port})
 
         # Known CVE patterns
         for pattern in self.CVE_PATTERNS:
             if re.search(pattern, code):
-                issues.append(f"Known risky pattern detected: {pattern}")
+                issue = f"Known risky pattern detected: {pattern}"
+                issues.append(issue)
+                if self.notebook:
+                    self.notebook.log("security_scanner", "CVE_PATTERN", issue, metadata={"pattern": pattern})
 
         if issues:
+            error_msg = "; ".join(issues)
             logger.warning(f"Security issues found: {issues}")
-            return {'success': False, 'error': "; ".join(issues)}
-        logger.info("Security scan passed.")
+            if self.notebook:
+                self.notebook.log("security_scanner", "VALIDATION_FAILED", "Security scan failed", metadata={
+                    "issues": issues,
+                    "issue_count": len(issues),
+                    "error": error_msg
+                })
+            return {'success': False, 'error': error_msg}
+        
+        success_msg = "Security scan passed."
+        logger.info(success_msg)
+        if self.notebook:
+            self.notebook.log("security_scanner", "VALIDATION_PASSED", success_msg, metadata={"code_length": len(code)})
         return {'success': True, 'error': None}
 
 
@@ -155,8 +232,14 @@ class BehavioralSimulator:
     Simulates code execution in a restricted environment to detect risky or unexpected runtime behaviors.
     """
 
+    def __init__(self, notebook: Optional[AddOnNotebook] = None):
+        self.notebook = notebook
+
     def validate(self, code: str) -> Dict[str, Optional[str]]:
         import builtins
+
+        if self.notebook:
+            self.notebook.log("behavioral_simulator", "VALIDATION_START", "Starting behavioral simulation", metadata={"code_length": len(code)})
 
         # Restricted builtins
         SAFE_BUILTINS = {
@@ -172,18 +255,34 @@ class BehavioralSimulator:
             exec_env = {}
             exec(compile(code, "<string>", "exec"), restricted_globals, exec_env)
         except Exception as e:
-            logger.warning(f"Simulation flagged a runtime error or risky behavior: {e}")
-            return {'success': False, 'error': f"Simulation flagged a runtime error or risky behavior: {e}"}
+            error_msg = f"Simulation flagged a runtime error or risky behavior: {e}"
+            logger.warning(error_msg)
+            if self.notebook:
+                self.notebook.log("behavioral_simulator", "VALIDATION_FAILED", error_msg, metadata={
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "code_length": len(code)
+                })
+            return {'success': False, 'error': error_msg}
 
-        logger.info("Behavioral simulation passed.")
+        success_msg = "Behavioral simulation passed."
+        logger.info(success_msg)
+        if self.notebook:
+            self.notebook.log("behavioral_simulator", "VALIDATION_PASSED", success_msg, metadata={
+                "code_length": len(code),
+                "safe_builtins_count": len(SAFE_BUILTINS)
+            })
         return {'success': True, 'error': None}
 
 
 # Registration for Promethyn's validator chain (Do NOT overwrite existing logic; inject safely)
-def register_validators(chain: list):
+def register_validators(chain: list, notebook: Optional[AddOnNotebook] = None):
     """
     Inject Promethyn validators into the provided chain using dynamic imports.
     """
+    if notebook:
+        notebook.log("extended_validators", "REGISTRATION_START", "Starting validator registration", metadata={"chain_length": len(chain)})
+    
     # List of validator names to dynamically load
     validator_names = [
         "CodeQualityAssessor",
@@ -198,6 +297,7 @@ def register_validators(chain: list):
         "BehavioralSimulator": BehavioralSimulator
     }
     
+    registered_count = 0
     for validator_name in validator_names:
         # Check if validator is already in chain
         if not any(type(v).__name__ == validator_name for v in chain):
@@ -210,26 +310,49 @@ def register_validators(chain: list):
                 validator_cls = getattr(validator_module, validator_name, None)
                 if validator_cls is not None:
                     logger.info(f"Dynamically loaded validator: {validator_name}")
+                    if notebook:
+                        notebook.log("extended_validators", "DYNAMIC_LOAD_SUCCESS", f"Dynamically loaded validator: {validator_name}", metadata={"validator_name": validator_name})
                 else:
                     logger.warning(f"Validator class {validator_name} not found in imported module — falling back to local class.")
+                    if notebook:
+                        notebook.log("extended_validators", "DYNAMIC_LOAD_FALLBACK", f"Validator class {validator_name} not found in imported module", metadata={"validator_name": validator_name})
             else:
                 logger.warning(f"Validator module for {validator_name} not found or failed to load — falling back to local class.")
+                if notebook:
+                    notebook.log("extended_validators", "MODULE_LOAD_FAILED", f"Validator module for {validator_name} not found", metadata={"validator_name": validator_name})
             
             # Fallback to local class if dynamic import failed
             if validator_cls is None:
                 validator_cls = local_validator_classes.get(validator_name)
                 if validator_cls is not None:
                     logger.info(f"Using local fallback for validator: {validator_name}")
+                    if notebook:
+                        notebook.log("extended_validators", "LOCAL_FALLBACK", f"Using local fallback for validator: {validator_name}", metadata={"validator_name": validator_name})
                 else:
                     logger.warning(f"Validator {validator_name} not found or failed to load — skipping.")
+                    if notebook:
+                        notebook.log("extended_validators", "VALIDATOR_SKIP", f"Validator {validator_name} not found", metadata={"validator_name": validator_name})
                     continue
             
             # Instantiate and add to chain
             try:
-                validator_instance = validator_cls()
+                validator_instance = validator_cls(notebook=notebook)
                 chain.append(validator_instance)
+                registered_count += 1
                 logger.info(f"Validator {validator_name} registered successfully.")
+                if notebook:
+                    notebook.log("extended_validators", "VALIDATOR_REGISTERED", f"Validator {validator_name} registered successfully", metadata={"validator_name": validator_name})
             except Exception as e:
-                logger.error(f"Failed to instantiate validator {validator_name}: {e}")
+                error_msg = f"Failed to instantiate validator {validator_name}: {e}"
+                logger.error(error_msg)
+                if notebook:
+                    notebook.log("extended_validators", "INSTANTIATION_ERROR", error_msg, metadata={"validator_name": validator_name, "error": str(e)})
     
-    logger.info("Promethyn validators registration complete.")
+    completion_msg = "Promethyn validators registration complete."
+    logger.info(completion_msg)
+    if notebook:
+        notebook.log("extended_validators", "REGISTRATION_COMPLETE", completion_msg, metadata={
+            "total_validators": len(validator_names),
+            "registered_count": registered_count,
+            "final_chain_length": len(chain)
+        })
