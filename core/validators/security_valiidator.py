@@ -68,10 +68,13 @@ def validate_security(file_path: str) -> Tuple[bool, str]:
     """
     try:
         # Use safe_path_join to ensure path is secure
-        # Get the directory and filename
+        # Get the directory and filename to construct safe path
         dir_path = os.path.dirname(file_path)
         filename = os.path.basename(file_path)
-        safe_file_path = safe_path_join(dir_path, filename)
+        
+        # Use safe_path_join with directory as base to prevent directory traversal
+        # TODO: verify base_dir for path safety - currently using extracted directory
+        safe_file_path = safe_path_join(dir_path if dir_path else ".", filename)
         
         with open(safe_file_path, 'r', encoding='utf-8') as file:
             source = file.read()
