@@ -15,8 +15,7 @@ from addons.notebook import AddOnNotebook
 from tools.test_tool_runner import TestToolRunner  # <--- NEW IMPORT
 from core.validators.extended_validators import register_validators
 from core.sandbox_runner import SandboxRunner # <--- ADDED FOR SANDBOX INTEGRATION
-from core.utils.path_utils import safe_path_join
-from core.utils.validator_importer import import_validator
+from core.utils.path_utils import safe_path_join, import_validator
 
 # --- BEGIN: Updated Validator Import System ---
 def import_validator_fallback(name):
@@ -344,8 +343,9 @@ class SelfCodingEngine:
         """
         Dynamically and safely register enhanced validators at the end of the validator chain.
         Preserves all existing validation logic and order.
+        Uses the new import_validator function from core.utils.path_utils for fallback-safe importing.
         """
-        # Dynamic validator registration using import_validator
+        # Enhanced validator configurations with module names and class names
         enhanced_validator_configs = [
             ("code_quality_assessor", "CodeQualityAssessor"),
             ("security_scanner", "SecurityScanner"), 
@@ -353,7 +353,7 @@ class SelfCodingEngine:
         ]
         
         for validator_module_name, validator_class_name in enhanced_validator_configs:
-            # Use dynamic import for each validator
+            # Use dynamic import for each validator using the new import_validator function
             validator_module = import_validator(validator_module_name)
             if validator_module is None:
                 self.logger.warning(f"Validator module '{validator_module_name}' is missing or failed to import; skipping registration.")
@@ -802,7 +802,7 @@ class SelfCodingEngine:
                             self.logger.debug(f"Validator '{validator_name}' exception during audit: {val_ex}")
 
                 # --- Dynamic import of tool module and class ---\
-                module_path = tool_path[:-3].replace("/", ".").replace("\\\\", ".") if tool_path and tool_path.endswith(".py") else (tool_path.replace("/", ".").replace("\\\\", ".") if tool_path else None)
+                module_path = tool_path[:-3].replace("/", ".").replace("\\\\", ".") if tool_path and tool_path.endswith(".py") else (tool_path.replace("/", ".").replace("\\\\", ".") if tool_path else [...]
                 if not module_path:
                     raise ValueError(f"Cannot determine module path from tool_path: {tool_path}")
 
