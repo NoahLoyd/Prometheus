@@ -28,33 +28,35 @@ def import_validator_fallback(name):
     return validator_module
 # --- END: Updated Validator Import System ---
 
-# --- Begin: Imports for new validator modules using import_validator ---
-try:
-    code_quality_module = import_validator("code_quality_assessor")
-    CodeQualityAssessor = getattr(code_quality_module, "CodeQualityAssessor", None) if code_quality_module else None
-except Exception:
-    CodeQualityAssessor = None
+# --- Begin: Dynamic Validator Imports using import_validator ---
+logger = logging.getLogger("Promethyn.SelfCodingEngine")
 
-try:
-    security_scanner_module = import_validator("security_scanner")
-    SecurityScanner = getattr(security_scanner_module, "SecurityScanner", None) if security_scanner_module else None
-except Exception:
-    SecurityScanner = None
+# Dynamic validator loading
+CodeQualityAssessor = None
+SecurityScanner = None
+BehavioralSimulator = None
+validate_security = None
 
-try:
-    behavioral_simulator_module = import_validator("behavioral_simulator")
-    BehavioralSimulator = getattr(behavioral_simulator_module, "BehavioralSimulator", None) if behavioral_simulator_module else None
-except Exception:
-    BehavioralSimulator = None
-# --- End: Imports for new validator modules ---
+# List of validators to attempt dynamic import
+validator_names = ["code_quality_assessor", "security_scanner", "behavioral_simulator", "security_validator"]
 
-# --- Import Security Validator as required using import_validator ---
-try:
-    security_validator_module = import_validator("security_validator")
-    validate_security = getattr(security_validator_module, "validate_security", None) if security_validator_module else None
-except Exception:
-    validate_security = None
-# --- End Security Validator import ---
+for validator_name in validator_names:
+    try:
+        validator_module = import_validator(validator_name)
+        if validator_module is not None:
+            if validator_name == "code_quality_assessor":
+                CodeQualityAssessor = getattr(validator_module, "CodeQualityAssessor", None)
+            elif validator_name == "security_scanner":
+                SecurityScanner = getattr(validator_module, "SecurityScanner", None)
+            elif validator_name == "behavioral_simulator":
+                BehavioralSimulator = getattr(validator_module, "BehavioralSimulator", None)
+            elif validator_name == "security_validator":
+                validate_security = getattr(validator_module, "validate_security", None)
+        else:
+            logger.warning(f"Could not import validator: {validator_name}")
+    except Exception as e:
+        logger.warning(f"Exception while importing validator '{validator_name}': {e}")
+# --- End: Dynamic Validator Imports ---
 
 class SelfCodingEngine:
     """
@@ -80,7 +82,7 @@ class SelfCodingEngine:
         # --- Register core validators safely on instantiation ---
         self.register_validator("MathEvaluator", MathEvaluator())
         self.register_validator("PlanVerifier", PlanVerifier())
-        register_validators(self.validators)  # <-- Inject extended Promethyn validators here
+        register_validators(self.validator_registry)  # <-- Inject extended Promethyn validators here
 
         # --- Register TestToolRunner instance (instantiated ONCE here) ---
         self.test_runner = TestToolRunner()  # <--- Elite singleton placement
@@ -115,46 +117,42 @@ class SelfCodingEngine:
         Dynamically and safely register enhanced validators at the end of the validator chain.
         Preserves all existing validation logic and order.
         """
-        # Defensive: do not overwrite existing names, log if registration fails.
-        enhanced_validator_names = [
-            "code_quality_assessor",
-            "security_scanner", 
-            "behavioral_simulator"
+        # Dynamic validator registration using import_validator
+        enhanced_validator_configs = [
+            ("code_quality_assessor", "CodeQualityAssessor"),
+            ("security_scanner", "SecurityScanner"), 
+            ("behavioral_simulator", "BehavioralSimulator")
         ]
         
-        for validator_name in enhanced_validator_names:
+        for validator_module_name, validator_class_name in enhanced_validator_configs:
             # Use dynamic import for each validator
-            validator_module = import_validator(validator_name)
+            validator_module = import_validator(validator_module_name)
             if validator_module is None:
-                self.logger.warning(f"Validator module '{validator_name}' is missing or failed to import; skipping registration.")
+                self.logger.warning(f"Validator module '{validator_module_name}' is missing or failed to import; skipping registration.")
                 continue
                 
-            # Determine class name from module name (convert snake_case to PascalCase)
-            class_name = ''.join(word.capitalize() for word in validator_name.split('_'))
-            validator_cls = getattr(validator_module, class_name, None)
+            validator_cls = getattr(validator_module, validator_class_name, None)
             
             if validator_cls is None:
-                self.logger.warning(f"Validator class '{class_name}' not found in module '{validator_name}'; skipping registration.")
+                self.logger.warning(f"Validator class '{validator_class_name}' not found in module '{validator_module_name}'; skipping registration.")
                 continue
                 
             try:
                 instance = validator_cls()
             except Exception as e:
-                self.logger.error(f"Could not instantiate validator '{class_name}': {e}")
+                self.logger.error(f"Could not instantiate validator '{validator_class_name}': {e}")
                 continue
             try:
-                self.register_validator(class_name, instance)
-                self.logger.info(f"Validator '{class_name}' registered and appended to VALIDATORS pipeline.")
+                self.register_validator(validator_class_name, instance)
+                self.logger.info(f"Validator '{validator_class_name}' registered and appended to VALIDATORS pipeline.")
             except ValueError as ve:
-                self.logger.warning(f"Validator '{class_name}' could not be registered: {ve}")
+                self.logger.warning(f"Validator '{validator_class_name}' could not be registered: {ve}")
 
         # Ensure order: append to VALIDATORS after MathEvaluator/TestToolRunner, never before.
         # Existing pipeline: ["MathEvaluator", "PlanVerifier", "CodeCritic"]
-        for validator_name in enhanced_validator_names:
-            # Convert module name to class name for checking registry
-            class_name = ''.join(word.capitalize() for word in validator_name.split('_'))
-            if class_name not in self.VALIDATORS and class_name in self.validator_registry:
-                self.VALIDATORS.append(class_name)
+        for _, validator_class_name in enhanced_validator_configs:
+            if validator_class_name not in self.VALIDATORS and validator_class_name in self.validator_registry:
+                self.VALIDATORS.append(validator_class_name)
 
     def _get_logger(self):
         logger = logging.getLogger("Promethyn.SelfCodingEngine")
@@ -643,7 +641,7 @@ class SelfCodingEngine:
                             self.logger.debug(f"Validator '{validator_name}' exception during audit: {val_ex}")
 
                 # --- Dynamic import of tool module and class ---\
-                module_path = tool_path[:-3].replace("/", ".").replace("\\\\", ".") if tool_path and tool_path.endswith(".py") else (tool_path.replace("/", ".").replace("\\\\", ".") if tool_path else [...]
+                module_path = tool_path[:-3].replace("/", ".").replace("\\\\", ".") if tool_path and tool_path.endswith(".py") else (tool_path.replace("/", ".").replace("\\\\", ".") if tool_path else None)
                 if not module_path:
                     raise ValueError(f"Cannot determine module path from tool_path: {tool_path}")
 
