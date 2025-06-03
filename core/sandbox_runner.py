@@ -7,6 +7,7 @@ import logging
 import resource
 import threading
 from typing import Dict, Any, Optional
+from core.utils.path_utils import safe_path_join
 
 # Promethyn logger setup — assumes logging config elsewhere
 logger = logging.getLogger("promethyn.sandbox")
@@ -168,14 +169,14 @@ def run_python_file_in_sandbox(
 
         # Copy the Python file into the temp dir
         base_filename = os.path.basename(python_file_path)
-        dest_file_path = os.path.join(temp_dir, base_filename)
+        dest_file_path = safe_path_join(temp_dir, base_filename)
         shutil.copy2(python_file_path, dest_file_path)
         logger.debug(f"Copied {python_file_path} to sandbox as {dest_file_path}")
 
         # Write any extra files needed for the execution into the sandbox
         if extra_files:
             for fname, fcontent in extra_files.items():
-                safe_path = os.path.join(temp_dir, os.path.basename(fname))
+                safe_path = safe_path_join(temp_dir, os.path.basename(fname))
                 with open(safe_path, "w", encoding="utf-8") as f:
                     f.write(fcontent)
                 logger.debug(f"Wrote extra file to sandbox: {safe_path}")
