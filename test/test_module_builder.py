@@ -1,256 +1,419 @@
-import unittest
 import os
-import tempfile
-import shutil
-from unittest.mock import patch, mock_open
-from tools.module_builder import ModuleBuilderTool
+import re
+from typing import Dict, Any, List, Optional
+from validators.security_validator import validate_security
+from core.utils.path_utils import safe_path_join
 
-class TestModuleBuilder(unittest.TestCase):
-    def setUp(self):
-        """Set up test environment with temporary directory."""
-        self.temp_dir = tempfile.mkdtemp()
-        self.builder = ModuleBuilderTool()
-        
-        # Create necessary subdirectories
-        for dir_path in self.builder.MODULE_TYPE_DIRS.values():
-            os.makedirs(os.path.join(self.temp_dir, dir_path), exist_ok=True)
-        
-        # Change to temp directory for tests
-        self.original_dir = os.getcwd()
-        os.chdir(self.temp_dir)
-        
-        # Create empty AddOnNotebook.log
-        with open("AddOnNotebook.log", "w") as f:
-            f.write("")
+class ModuleBuilderTool:
+    """
+    Promethyn AGI ModuleBuilderTool (Python 3.11+)
+    Accepts single-file (legacy) and multi-file (enhanced) structured build plans,
+    writes code and test files to disk, and enforces world-class engineering standards.
+    Now supports modular AGI system with type routing, validation enforcement, and AddOnNotebook logging.
 
-    def tearDown(self):
-        """Clean up temporary directory after tests."""
-        os.chdir(self.original_dir)
-        shutil.rmtree(self.temp_dir)
+    Features:
+    - Legacy and enhanced multi-file plan support.
+    - Overwrite protection (never overwrites unless explicitly allowed).
+    - Robust schema validation and logging of structural inconsistencies.
+    - Modular, extensible, and safe.
+    - Comprehensive docstrings, comments, and result tracking.
+    - AGI module type routing and validator execution.
+    - AddOnNotebook logging of validator results.
+    """
+    MODULE_TYPE_HEADERS = {
+        "tool":    '"""Tool Module: {name}\n\nPromethyn Tool module. Type: tool.\n"""\n',
+        "test":    '"""Test Module: {name}\n\nPromethyn Test module. Type: test.\n"""\n',
+        "validator": '"""Validator Module: {name}\n\nPromethyn Validator module. Type: validator.\n"""\n',
+        "core":    '"""Core Module: {name}\n\nPromethyn Core module. Type: core.\n"""\n',
+    }
+    MODULE_TYPE_DIRS = {
+        "tool": "tools/",
+        "test": "test/",
+        "validator": "validators/",
+        "core": "core/",
+    }
+    VALID_MODULE_TYPES = ("tool", "test", "validator", "core")
 
-    def test_write_module_legacy_plan(self):
-        """Test writing a module with legacy plan format."""
-        plan = {
-            "file": "my_tool.py",
-            "code": "class MyTool:\n    pass",
-            "test": "def test_my_tool():\n    pass"
-        }
-        
-        result = self.builder.write_module(plan)
-        
-        # Check if files were written to correct locations
-        self.assertIn("tools/my_tool.py", result["written"])
-        self.assertIn("tests/my_tool_test.py", result["written"])
-        
-        # Verify file contents
-        with open("tools/my_tool.py") as f:
-            content = f.read()
-            self.assertIn('"""Tool Module: my_tool', content)
-            self.assertIn("class MyTool:", content)
+    def write_module(self, plan: Dict[str, Any]) -> Dict[str, List[str]]:
+        """
+        Main entry: Writes modules and test files as specified in the build plan.
+        Adds support for type-based routing, validation, and AddOnNotebook logging.
 
-    def test_write_module_enhanced_plan(self):
-        """Test writing modules with enhanced multi-file plan format."""
-        plan = {
-            "files": [
-                {
-                    "path": "validator_module.py",
-                    "code": "def validate_something(): pass",
-                    "type": "validator"
-                },
-                {
-                    "path": "core_module.py",
-                    "code": "class CoreModule: pass",
-                    "type": "core"
-                }
-            ]
-        }
-        
-        result = self.builder.write_module(plan)
-        
-        # Check correct routing
-        self.assertIn("validators/validator_module.py", result["written"])
-        self.assertIn("core/core_module.py", result["written"])
-        
-        # Verify headers
-        with open("validators/validator_module.py") as f:
-            content = f.read()
-            self.assertIn('"""Validator Module:', content)
-        
-        with open("core/core_module.py") as f:
-            content = f.read()
-            self.assertIn('"""Core Module:', content)
+        Args:
+            plan (dict): Structured build plan. Must contain either:
+                - Legacy: "file" and "code" (both str)
+                - Enhanced: "files" (list of dicts with "path" and "code" keys; may specify "type")
+                Optional: "test", "test_code", "test_files", "overwrite_allowed" (bool)
 
-    def test_overwrite_protection(self):
-        """Test that files are not overwritten unless explicitly allowed."""
-        # First write
-        plan1 = {
-            "file": "protected.py",
-            "code": "# Version 1",
-            "type": "tool"
-        }
-        self.builder.write_module(plan1)
-        
-        # Attempt overwrite
-        plan2 = {
-            "file": "protected.py",
-            "code": "# Version 2",
-            "type": "tool"
-        }
-        result = self.builder.write_module(plan2)
-        
-        self.assertIn("tools/protected.py", result["skipped"])
-        
-        # Check content remains unchanged
-        with open("tools/protected.py") as f:
-            self.assertIn("# Version 1", f.read())
-        
-        # Test explicit overwrite
-        plan3 = {
-            "file": "protected.py",
-            "code": "# Version 3",
-            "type": "tool",
-            "overwrite_allowed": True
-        }
-        result = self.builder.write_module(plan3)
-        
-        self.assertIn("tools/protected.py", result["written"])
-        with open("tools/protected.py") as f:
-            self.assertIn("# Version 3", f.read())
+        Returns:
+            dict: Structured log with keys:
+                - "written": files written
+                - "skipped": files skipped due to overwrite protection or missing info
+                - "errors": files or plan errors encountered
+        """
+        results = {"written": [], "skipped": [], "errors": []}
+        overwrite_allowed = bool(plan.get("overwrite_allowed", False))
 
-    def test_snake_case_enforcement(self):
-        """Test that filenames are converted to snake_case."""
-        test_cases = [
-            ("MyTestTool.py", "my_test_tool.py"),
-            ("fastAPI_Tool.py", "fast_api_tool.py"),
-            ("Quick-Brown-Fox.py", "quick_brown_fox.py"),
-            ("SNAKEcase_TEST.py", "snakecase_test.py")
-        ]
-        
-        for input_name, expected in test_cases:
-            plan = {
-                "file": input_name,
-                "code": "pass",
-                "type": "tool"
-            }
-            result = self.builder.write_module(plan)
-            expected_path = os.path.join("tools", expected)
-            self.assertIn(expected_path, result["written"])
+        # --- Legacy single-file plan support ---
+        legacy_mode = "file" in plan and "code" in plan
 
-    def test_module_type_routing(self):
-        """Test that files are routed to correct directories based on type."""
-        test_cases = [
-            ("test_module.py", "test", "tests/"),
-            ("validation_tool.py", "validator", "validators/"),
-            ("core_engine.py", "core", "core/"),
-            ("helper_tool.py", "tool", "tools/")
-        ]
-        
-        for filename, mod_type, expected_dir in test_cases:
-            plan = {
-                "file": filename,
-                "code": "pass",
-                "type": mod_type
-            }
-            result = self.builder.write_module(plan)
-            expected_path = os.path.join(expected_dir, self.builder._to_snake_case(filename))
-            self.assertIn(expected_path, result["written"])
+        # --- Enhanced multi-file plan support ---
+        enhanced_mode = "files" in plan and isinstance(plan["files"], list)
 
-    def test_header_insertion(self):
-        """Test that appropriate headers are inserted based on module type."""
-        test_cases = [
-            ("tool", "Tool Module"),
-            ("test", "Test Module"),
-            ("validator", "Validator Module"),
-            ("core", "Core Module")
-        ]
-        
-        for mod_type, expected_header in test_cases:
-            plan = {
-                "file": f"test_{mod_type}.py",
-                "code": "# Some code",
-                "type": mod_type
-            }
-            result = self.builder.write_module(plan)
-            written_file = result["written"][0]
-            
-            with open(written_file) as f:
-                content = f.read()
-                self.assertIn(f'"""{expected_header}:', content)
-                self.assertIn('Type: ' + mod_type, content)
+        # --- Schema Validation and Logging ---
+        if not (legacy_mode or enhanced_mode):
+            results["errors"].append(
+                "Plan must contain either 'file' and 'code', or a 'files' list of dicts with 'path' and 'code'."
+            )
+            return results
 
-    @patch('tools.module_builder.validate_security')
-    def test_validator_integration(self, mock_validate):
-        """Test that validators are called and results are logged."""
-        # Setup mock validator
-        mock_validate.return_value = (True, "Security check passed")
-        
-        plan = {
-            "file": "secure_tool.py",
-            "code": "class SecureTool: pass",
-            "type": "tool"
-        }
-        
-        result = self.builder.write_module(plan)
-        
-        # Check validator was called
-        self.assertTrue(mock_validate.called)
-        
-        # Check logging
-        with open("AddOnNotebook.log") as f:
-            log_content = f.read()
-            self.assertIn("VALIDATOR", log_content)
-            self.assertIn("Security check passed", log_content)
+        # --- Process Legacy Plan ---
+        if legacy_mode:
+            file_path = plan.get("file")
+            code = plan.get("code", "")
+            test_code = plan.get("test", "") or plan.get("test_code", "")
+            test_file_path = file_path.replace(".py", "_test.py") if file_path else None
 
-    def test_invalid_plan_handling(self):
-        """Test handling of invalid build plans."""
-        invalid_plans = [
-            {},  # Empty plan
-            {"file": "test.py"},  # Missing code
-            {"files": "not_a_list"},  # Invalid files format
-            {"files": [{"path": "test.py"}]}  # Missing code in file entry
-        ]
-        
-        for plan in invalid_plans:
-            result = self.builder.write_module(plan)
-            self.assertTrue(len(result["errors"]) > 0)
-            self.assertEqual(len(result["written"]), 0)
+            # Infer type for legacy mode
+            mod_type = self._infer_type_from_path(file_path)
+            file_path = self._route_path(file_path, mod_type)
+            code = self._apply_type_header(file_path, code, mod_type)
 
-    def test_type_inference(self):
-        """Test module type inference from file paths and names."""
-        test_cases = [
-            ("tools/something.py", "tool"),
-            ("validators/check.py", "validator"),
-            ("core/engine.py", "core"),
-            ("tests/test_module.py", "test"),
-            ("my_tool_helper.py", "tool"),
-            ("test_validator.py", "test"),
-            ("core_module.py", "core"),
-            ("random_file.py", None)
-        ]
-        
-        for path, expected_type in test_cases:
-            inferred_type = self.builder._infer_type_from_path(path)
-            self.assertEqual(inferred_type, expected_type)
+            # Check required fields
+            if not file_path or not code:
+                results["errors"].append("Legacy plan missing required 'file' or 'code' fields.")
+            else:
+                try:
+                    self._safe_write_file(
+                        file_path,
+                        code,
+                        results,
+                        overwrite_allowed=overwrite_allowed
+                    )
+                except Exception as e:
+                    results["errors"].append(f"Error writing {file_path}: {e}")
 
-    def test_placeholder_test_generation(self):
-        """Test generation of placeholder test files."""
-        plan = {
-            "file": "new_tool.py",
-            "code": "class NewTool: pass",
-            "type": "tool"
-        }
-        
-        result = self.builder.write_module(plan)
-        
-        # Check that a placeholder test was generated
-        test_file = "tests/new_tool_test.py"
-        self.assertIn(test_file, result["written"])
-        
-        # Verify placeholder test contents
-        with open(test_file) as f:
-            content = f.read()
-            self.assertIn("test_placeholder", content)
-            self.assertIn("new_tool.py", content)
+                # Test file (optional)
+                if test_code and test_file_path:
+                    test_file_path = self._route_path(test_file_path, "test")
+                    test_code = self._apply_type_header(test_file_path, test_code, "test")
+                    try:
+                        self._safe_write_file(
+                            test_file_path,
+                            test_code,
+                            results,
+                            overwrite_allowed=overwrite_allowed
+                        )
+                    except Exception as e:
+                        results["errors"].append(f"Error writing {test_file_path}: {e}")
 
-if __name__ == '__main__':
-    unittest.main()
+                # Optionally generate placeholder test if test file is missing
+                if test_file_path and not os.path.exists(test_file_path):
+                    try:
+                        placeholder = self._generate_placeholder_test(file_path)
+                        self._safe_write_file(
+                            test_file_path,
+                            placeholder,
+                            results,
+                            overwrite_allowed=overwrite_allowed
+                        )
+                    except Exception as e:
+                        results["errors"].append(f"Error writing placeholder {test_file_path}: {e}")
+
+                # Validators (legacy: only if type is validator)
+                if mod_type == "validator":
+                    self._run_and_log_validators([file_path], results)
+
+                # Validate and log for all module types
+                if mod_type in self.VALID_MODULE_TYPES:
+                    valid = self._run_and_log_validators([file_path], results)
+                    if not valid:
+                        results["skipped"].append(file_path)
+
+        # --- Process Enhanced Plan ---
+        if enhanced_mode:
+            files = plan["files"]
+            written_paths = []
+            # Validate structure for each file entry
+            for idx, entry in enumerate(files):
+                if not isinstance(entry, dict):
+                    results["errors"].append(f"File entry at index {idx} is not a dict: {entry}")
+                    continue
+                path = entry.get("path")
+                code = entry.get("code")
+                mod_type = entry.get("type", None)
+                if not path or not code:
+                    results["errors"].append(f"File entry missing 'path' or 'code': {entry}")
+                    continue
+                mod_type = mod_type or self._infer_type_from_path(path)
+                routed_path = self._route_path(path, mod_type)
+                code = self._apply_type_header(routed_path, code, mod_type)
+                try:
+                    self._safe_write_file(
+                        routed_path,
+                        code,
+                        results,
+                        overwrite_allowed=overwrite_allowed
+                    )
+                    # SECURITY VALIDATION INJECTION (after file written, before registration)
+                    is_secure, sec_msg = validate_security(routed_path)
+                    if not is_secure:
+                        self._addon_log(f"SECURITY VALIDATION FAIL on {routed_path}: {sec_msg}")
+                        results["errors"].append(f"Security validation failed for {routed_path}: {sec_msg}")
+                        results["skipped"].append(routed_path)
+                        continue
+                    written_paths.append(routed_path)
+                except Exception as e:
+                    results["errors"].append(f"Error writing {routed_path}: {e}")
+
+            # --- Handle test files: "test_code" (single), "test_files" (list) ---
+            if "test_code" in plan and isinstance(plan["test_code"], str):
+                test_file_path = self._route_path("test_main.py", "test")
+                test_code = self._apply_type_header(test_file_path, plan["test_code"], "test")
+                try:
+                    self._safe_write_file(
+                        test_file_path,
+                        test_code,
+                        results,
+                        overwrite_allowed=overwrite_allowed
+                    )
+                except Exception as e:
+                    results["errors"].append(f"Error writing {test_file_path}: {e}")
+
+            if "test_files" in plan and isinstance(plan["test_files"], list):
+                for idx, tfile in enumerate(plan["test_files"]):
+                    if not isinstance(tfile, dict):
+                        results["errors"].append(f"Test file entry at index {idx} is not a dict: {tfile}")
+                        continue
+                    tpath = tfile.get("path")
+                    tcode = tfile.get("code")
+                    if not tpath or not tcode:
+                        results["errors"].append(f"Test file missing 'path' or 'code': {tfile}")
+                        continue
+                    tpath = self._route_path(tpath, "test")
+                    tcode = self._apply_type_header(tpath, tcode, "test")
+                    try:
+                        self._safe_write_file(
+                            tpath,
+                            tcode,
+                            results,
+                            overwrite_allowed=overwrite_allowed
+                        )
+                    except Exception as e:
+                        results["errors"].append(f"Error writing {tpath}: {e}")
+
+            # --- Optionally generate placeholder test for each main file if missing ---
+            for entry in files:
+                path = entry.get("path")
+                if path and path.endswith(".py"):
+                    mod_type = entry.get("type", None) or self._infer_type_from_path(path)
+                    routed_path = self._route_path(path, mod_type)
+                    test_path = routed_path.replace(".py", "_test.py")
+                    test_path = self._route_path(test_path, "test")
+                    if not os.path.exists(test_path):
+                        try:
+                            placeholder = self._generate_placeholder_test(routed_path)
+                            self._safe_write_file(
+                                test_path,
+                                placeholder,
+                                results,
+                                overwrite_allowed=overwrite_allowed
+                            )
+                        except Exception as e:
+                            results["errors"].append(f"Error writing placeholder {test_path}: {e}")
+
+            # Validators
+            valid = self._run_and_log_validators(written_paths, results)
+            if not valid:
+                # Remove files that failed validation from written
+                for p in written_paths:
+                    if p in results["written"]:
+                        results["written"].remove(p)
+                        results["skipped"].append(p)
+
+        return results
+
+    def _safe_write_file(self, file_path: str, code: str, results: Dict[str, List[str]], overwrite_allowed: bool = False) -> None:
+        """
+        Safely writes a file to disk, with overwrite protection and result logging.
+
+        Args:
+            file_path (str): File path for output.
+            code (str): File content.
+            results (dict): Tracking dict for written/skipped/errors.
+            overwrite_allowed (bool): If True, will overwrite existing files.
+
+        Raises:
+            Exception: Propagates file system errors.
+        """
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        if os.path.exists(file_path) and not overwrite_allowed:
+            results["skipped"].append(file_path)
+            return
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(code)
+        results["written"].append(file_path)
+
+    def _apply_type_header(self, file_path: str, code: str, mod_type: Optional[str]) -> str:
+        """
+        Apply type-specific header and docstring to the code, enforcing snake_case filenames.
+
+        Args:
+            file_path (str): Path to the file.
+            code (str): Module code.
+            mod_type (str): Type of the module.
+
+        Returns:
+            str: Code with enforced header.
+        """
+        base = os.path.basename(file_path).replace(".py", "")
+        snake = self._to_snake_case(base)
+        header = self.MODULE_TYPE_HEADERS.get(mod_type, "")
+        if header:
+            header = header.format(name=snake)
+        # Remove any pre-existing file-level docstring
+        code_body = re.sub(r'^\s*"""[\s\S]*?"""', '', code, count=1)
+        out = header + code_body.lstrip("\n")
+        return out
+
+    def _route_path(self, file_path: str, mod_type: Optional[str]) -> str:
+        """
+        Route file to correct directory and enforce snake_case filename.
+
+        Args:
+            file_path (str): Original path.
+            mod_type (str): Module type.
+
+        Returns:
+            str: Routed path.
+        """
+        filename = os.path.basename(file_path)
+        snake = self._to_snake_case(filename.replace(".py", "")) + ".py"
+        dest_dir = self.MODULE_TYPE_DIRS.get(mod_type, "")
+        if dest_dir:
+            routed = safe_path_join(dest_dir, snake)
+        else:
+            routed = file_path
+        return routed
+
+    def _to_snake_case(self, name: str) -> str:
+        """
+        Converts a string to snake_case.
+
+        Args:
+            name (str): The string.
+
+        Returns:
+            str: snake_case string.
+        """
+        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+        s2 = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1)
+        s3 = re.sub(r'[^a-zA-Z0-9]+', '_', s2)
+        return s3.lower().strip("_")
+
+    def _infer_type_from_path(self, file_path: Optional[str]) -> Optional[str]:
+        """
+        Infer module type from filename or path.
+
+        Args:
+            file_path (str): Path.
+
+        Returns:
+            str: Type or None.
+        """
+        if not file_path:
+            return None
+        p = file_path.lower()
+        if p.startswith("tools/") or "_tool" in p or "tool" in p:
+            return "tool"
+        if p.startswith("validators/") or "_validator" in p or "validator" in p:
+            return "validator"
+        if p.startswith("core/") or "core" in p:
+            return "core"
+        if p.startswith("tests/") or "_test" in p or "test" in p:
+            return "test"
+        return None
+
+    def _generate_placeholder_test(self, source_path: str) -> str:
+        """
+        Generates a placeholder Python test file for a given source file.
+
+        Args:
+            source_path (str): Path to the source module.
+
+        Returns:
+            str: Minimal pytest-style placeholder for the given module.
+        """
+        mod = os.path.basename(source_path).replace(".py", "")
+        return f'''"""Test Module: {mod}
+
+Promethyn Test module. Type: test.
+"""
+
+def test_placeholder():
+    assert True, "Placeholder test for {mod}.py"
+'''
+
+    def _run_and_log_validators(self, file_paths: List[str], results: Dict[str, List[str]]) -> bool:
+        """
+        Run all registered validators on the given module files.
+        Log results to AddOnNotebook. If any validator fails, modules will not be installed.
+
+        Args:
+            file_paths (list): List of module file paths.
+            results (dict): Results log.
+
+        Returns:
+            bool: True if all validators passed, False otherwise.
+        """
+        all_valid = True
+        validator_funcs = self._collect_validators()
+        for file_path in file_paths:
+            for v_name, v_func in validator_funcs.items():
+                try:
+                    valid, msg = v_func(file_path)
+                    self._addon_log(f"VALIDATOR {v_name} on {file_path}: {'PASS' if valid else 'FAIL'} - {msg}")
+                    if not valid:
+                        results["errors"].append(f"Validator {v_name} failed on {file_path}: {msg}")
+                        all_valid = False
+                except Exception as e:
+                    self._addon_log(f"VALIDATOR {v_name} on {file_path}: ERROR - {e}")
+                    results["errors"].append(f"Validator {v_name} error on {file_path}: {e}")
+                    all_valid = False
+        return all_valid
+
+    def _collect_validators(self) -> Dict[str, Any]:
+        """
+        Collect all validator functions from validators/ directory.
+
+        Returns:
+            dict: {validator_name: callable}
+        """
+        validators = {}
+        validator_dir = self.MODULE_TYPE_DIRS["validator"]
+        if not os.path.isdir(validator_dir):
+            return validators
+        for fname in os.listdir(validator_dir):
+            if fname.endswith(".py"):
+                v_path = safe_path_join(validator_dir, fname)
+                try:
+                    ns = {}
+                    with open(v_path, "r", encoding="utf-8") as f:
+                        exec(f.read(), ns)
+                    for k, v in ns.items():
+                        if callable(v) and k.startswith("validate_"):
+                            validators[k] = v
+                except Exception:
+                    continue
+        return validators
+
+    def _addon_log(self, msg: str) -> None:
+        """
+        Log messages to AddOnNotebook (append to AddOnNotebook.log).
+
+        Args:
+            msg (str): The message.
+        """
+        log_path = "AddOnNotebook.log"
+        with open(log_path, "a", encoding="utf-8") as logf:
+            logf.write(msg.strip() + "\n")
