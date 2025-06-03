@@ -1,7 +1,9 @@
 import json
 import re
+import threading
 from typing import Dict, Any, List, Optional
 from llm.llm_router import LLMRouter
+from core.utils.path_utils import import_validator
 
 # Promethyn elite standards context for tool/code generation
 STANDARD_CONTEXT = (
@@ -133,54 +135,77 @@ class PromptDecomposer:
             config = { "models": ["simulated"], "use_simulation": True }
         self.llm = LLMRouter(config)
 
+        # Thread-safe validator registration
+        self.validator_lock = threading.Lock()
+        self.validator_registry = {}
+
         # --- ENHANCEMENT: Modular Validator Registration ---
         self.validators = []
         self._register_default_validators()
+
+    def register_validator_safely(self, name: str, validator_cls):
+        """
+        Thread-safe method to register a validator in the validator registry.
+        
+        :param name: Unique string identifier for the validator.
+        :param validator_cls: Callable validator instance or class to register.
+        """
+        with self.validator_lock:
+            if not callable(validator_cls):
+                print(f"[PromptDecomposer] Validator '{name}' is not callable, skipping registration.")
+                return
+            
+            if name in self.validator_registry:
+                print(f"[PromptDecomposer] Validator '{name}' already exists in registry, overwriting.")
+            
+            self.validator_registry[name] = validator_cls
+            self.validators.append(validator_cls)
+            print(f"[PromptDecomposer] Validator '{name}' registered successfully in thread-safe manner.")
 
     def _register_default_validators(self):
         """
         Registers the default validators, preserving chain order and allowing modular extension.
         Existing validators must remain registered in their canonical order.
         New validators are appended at the end of the pipeline, per elite extension requirements.
+        Uses the new import_validator function for fallback-safe importing.
         """
-        try:
-            # Import existing and new validators defensively.
-            # Existing validator registrations MUST NOT be altered or removed.
-            # New validators are added at the end.
-            from validators.math_evaluator import MathEvaluator
-            from validators.test_tool_runner import TestToolRunner
-        except ImportError:
-            MathEvaluator = None
-            TestToolRunner = None
+        # Define validator configurations with module names and class names
+        validator_configs = [
+            # Existing canonical validators
+            ("math_evaluator", "MathEvaluator"),
+            ("test_tool_runner", "TestToolRunner"),
+            # Extended validators (added at the end)
+            ("code_quality_assessor", "CodeQualityAssessor"),
+            ("security_scanner", "SecurityScanner"),
+            ("behavioral_simulator", "BehavioralSimulator")
+        ]
 
-        # Register canonical validators, if present.
-        if MathEvaluator is not None:
-            self.validators.append(MathEvaluator())
-        if TestToolRunner is not None:
-            self.validators.append(TestToolRunner())
-
-        # --- BEGIN: ELITE EXTENSIONS (Safe/Modular) ---
-        try:
-            from validators.code_quality_assessor import CodeQualityAssessor
-        except ImportError:
-            CodeQualityAssessor = None
-        try:
-            from validators.security_scanner import SecurityScanner
-        except ImportError:
-            SecurityScanner = None
-        try:
-            from validators.behavioral_simulator import BehavioralSimulator
-        except ImportError:
-            BehavioralSimulator = None
-
-        # Register new validators only if their classes are available.
-        if CodeQualityAssessor is not None:
-            self.validators.append(CodeQualityAssessor())
-        if SecurityScanner is not None:
-            self.validators.append(SecurityScanner())
-        if BehavioralSimulator is not None:
-            self.validators.append(BehavioralSimulator())
-        # --- END: ELITE EXTENSIONS ---
+        for validator_module_name, validator_class_name in validator_configs:
+            # Use dynamic import for each validator using the new import_validator function
+            validator_module = import_validator(validator_module_name)
+            if validator_module is None:
+                print(f"[PromptDecomposer] Validator module '{validator_module_name}' is missing or failed to import; skipping registration.")
+                continue
+                
+            validator_cls = getattr(validator_module, validator_class_name, None)
+            
+            if validator_cls is None:
+                print(f"[PromptDecomposer] Validator class '{validator_class_name}' not found in module '{validator_module_name}'; skipping registration.")
+                continue
+                
+            try:
+                # Try to instantiate the validator
+                if hasattr(validator_cls, '__call__'):
+                    # If it's already callable (like a function), use it directly
+                    instance = validator_cls
+                else:
+                    # If it's a class, instantiate it
+                    instance = validator_cls()
+            except Exception as e:
+                print(f"[PromptDecomposer] Could not instantiate validator '{validator_class_name}': {e}")
+                continue
+            
+            self.register_validator_safely(validator_class_name, instance)
 
     def decompose(self, prompt: str) -> Dict[str, Any]:
         """
