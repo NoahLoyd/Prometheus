@@ -336,6 +336,28 @@ class SelfCodingEngine:
         # Setup validation chain with dependencies
         self._setup_validation_chain()
 
+    def _get_logger(self):
+        """Get logger instance for SelfCodingEngine."""
+        return logging.getLogger("Promethyn.SelfCodingEngine")
+
+    def register_validator_safely(self, name: str, validator_cls: Callable):
+        """
+        Thread-safe method to register a validator in the validator registry.
+        
+        :param name: Unique string identifier for the validator.
+        :param validator_cls: Callable validator instance or class to register.
+        """
+        with self.validator_lock:
+            if not callable(validator_cls):
+                self.logger.warning(f"Validator '{name}' is not callable.")
+                return
+            
+            if name in self.validator_registry:
+                self.logger.info(f"Validator '{name}' already exists. Overwriting.")
+            
+            self.validator_registry[name] = validator_cls
+            self.logger.info(f"Validator '{name}' registered safely.")
+
     def _generate_task_id(self, plan: Dict[str, Any], operation_type: str = "tool") -> str:
         """
         Generate a consistent task_id for retry memory tracking.
@@ -704,6 +726,14 @@ class SelfCodingEngine:
             augmented_fail_msg = f"{fail_msg} Details: {'; '.join(specific_errors)}"
             single_result["registration"]["error"] = augmented_fail_msg
             
+            # Log retry memory result for validation failure
+            self._log_retry_memory_result(
+                task_id=f"validation:{plan.get('name', 'unknown')}",
+                success=False,
+                reason="validation_failed",
+                plan=plan
+            )
+            
             if self.notebook:
                 self.notebook.log("tool_rejected", {
                     "plan": plan,
@@ -714,6 +744,14 @@ class SelfCodingEngine:
                 })
             return single_result
         else:
+            # Log retry memory result for validation success
+            self._log_retry_memory_result(
+                task_id=f"validation:{plan.get('name', 'unknown')}",
+                success=True,
+                reason="validation_passed",
+                plan=plan
+            )
+            
             if self.notebook:
                 self.notebook.log("tool_validated", { 
                     "plan": plan,
@@ -741,6 +779,15 @@ class SelfCodingEngine:
                     if not validator_result.get("success", True):
                         val_msg = f"Secondary validator hook {validator_name} failed: {validator_result.get('error')}"
                         single_result["registration"] = {"success": False, "error": val_msg}
+                        
+                        # Log retry memory result for secondary validator failure
+                        self._log_retry_memory_result(
+                            task_id=f"secondary_validator:{plan.get('name', 'unknown')}",
+                            success=False,
+                            reason=f"secondary_validator_{validator_name}_failed",
+                            plan=plan
+                        )
+                        
                         if self.notebook:
                             self.notebook.log("secondary_validator_failure", {
                                 "plan": plan,
@@ -754,6 +801,15 @@ class SelfCodingEngine:
                     tb = traceback.format_exc()
                     val_msg = f"Secondary validator hook {validator_name} raised: {val_ex}\n{tb}"
                     single_result["registration"] = {"success": False, "error": val_msg}
+                    
+                    # Log retry memory result for secondary validator exception
+                    self._log_retry_memory_result(
+                        task_id=f"secondary_validator:{plan.get('name', 'unknown')}",
+                        success=False,
+                        reason=f"secondary_validator_{validator_name}_exception",
+                        plan=plan
+                    )
+                    
                     if self.notebook:
                         self.notebook.log("secondary_validator_exception", {
                             "plan": plan,
@@ -790,6 +846,15 @@ class SelfCodingEngine:
             if not test_result_secondary.get("passed", False):
                 fail_msg = f"Final TestToolRunner check failed: {test_result_secondary.get('error', test_result_secondary)}"
                 single_result["registration"] = {"success": False, "error": fail_msg}
+                
+                # Log retry memory result for final test failure
+                self._log_retry_memory_result(
+                    task_id=f"final_test:{plan.get('name', 'unknown')}",
+                    success=False,
+                    reason="final_test_failed",
+                    plan=plan
+                )
+                
                 if self.notebook:
                     self.notebook.log("final_test_tool_runner_failure", {
                         "plan": plan,
@@ -798,6 +863,14 @@ class SelfCodingEngine:
                     })
                 self.logger.error(fail_msg)
                 return single_result
+            else:
+                # Log retry memory result for final test success
+                self._log_retry_memory_result(
+                    task_id=f"final_test:{plan.get('name', 'unknown')}",
+                    success=True,
+                    reason="final_test_passed",
+                    plan=plan
+                )
         
         # --- BEGIN SANDBOX INTEGRATION ---
         sandbox_run_successful = True
@@ -828,6 +901,10 @@ class SelfCodingEngine:
                     fail_msg = f"Sandbox execution failed for tool '{tool_path}'. Details: {error_details}"
                     self.logger.error(fail_msg)
                     single_result["registration"] = {"success": False, "error": fail_msg, "sandbox_output": sandbox_result}
+                    
+                    # Log retry memory result for sandbox failure
+                    self._log_retry_memory_result(sandbox_task_id, False, error_details, plan)
+                    
                     if self.notebook:
                         self.notebook.log("sandbox_execution_failure", {
                             "plan": plan, 
@@ -835,10 +912,11 @@ class SelfCodingEngine:
                             "error": fail_msg, 
                             "sandbox_result_details": sandbox_result
                         })
-                    self._log_retry_memory_result(sandbox_task_id, False, error_details, plan)
                     return single_result
                 else:
                     self.logger.info(f"Sandbox execution successful for tool '{tool_path}'. stdout: {sandbox_result.get('stdout', 'N/A')}")
+                    
+                    # Log retry memory result for sandbox success
                     self._log_retry_memory_result(sandbox_task_id, True, "Sandbox execution successful", plan)
 
             except Exception as e_sandbox:
@@ -847,6 +925,10 @@ class SelfCodingEngine:
                 fail_msg = f"Exception during sandbox execution of tool '{tool_path}': {str(e_sandbox)}\n{tb_sandbox}"
                 self.logger.error(fail_msg)
                 single_result["registration"] = {"success": False, "error": fail_msg, "exception_details": tb_sandbox}
+                
+                # Log retry memory result for sandbox exception
+                self._log_retry_memory_result(sandbox_task_id, False, f"Exception: {str(e_sandbox)}", plan)
+                
                 if self.notebook:
                     self.notebook.log("sandbox_execution_exception", {
                         "plan": plan, 
@@ -854,7 +936,6 @@ class SelfCodingEngine:
                         "error": str(e_sandbox), 
                         "traceback": tb_sandbox
                     })
-                self._log_retry_memory_result(sandbox_task_id, False, f"Exception: {str(e_sandbox)}", plan)
                 return single_result
         elif not tool_path and hasattr(self, 'sandbox_runner') and self.sandbox_runner:
             self.logger.info(f"Sandbox execution skipped for plan {plan.get('name', 'N/A')} as tool_path is not available.")
@@ -948,6 +1029,15 @@ class SelfCodingEngine:
                 if not (isinstance(validation_result, dict) and validation_result.get("success", False)):
                     fail_msg = f"Tool's run('test') method validation failed: {validation_result}"
                     single_result["registration"] = {"success": False, "error": fail_msg}
+                    
+                    # Log retry memory result for tool test failure
+                    self._log_retry_memory_result(
+                        task_id=f"tool_test:{plan.get('name', 'unknown')}",
+                        success=False,
+                        reason="tool_test_failed",
+                        plan=plan
+                    )
+                    
                     if self.notebook:
                         self.notebook.log("tool_run_test_method_failure", {
                             "plan": plan,
@@ -956,11 +1046,28 @@ class SelfCodingEngine:
                         })
                     self.logger.error(fail_msg)
                     return single_result
+                else:
+                    # Log retry memory result for tool test success
+                    self._log_retry_memory_result(
+                        task_id=f"tool_test:{plan.get('name', 'unknown')}",
+                        success=True,
+                        reason="tool_test_passed",
+                        plan=plan
+                    )
 
             except Exception as val_err:
                 tb = traceback.format_exc()
                 fail_msg = f"Tool's run('test') method raised exception: {val_err}\n{tb}"
                 single_result["registration"] = {"success": False, "error": fail_msg}
+                
+                # Log retry memory result for tool test exception
+                self._log_retry_memory_result(
+                    task_id=f"tool_test:{plan.get('name', 'unknown')}",
+                    success=False,
+                    reason=f"tool_test_exception: {str(val_err)}",
+                    plan=plan
+                )
+                
                 if self.notebook:
                     self.notebook.log("tool_run_test_method_exception", {
                         "plan": plan,
@@ -972,6 +1079,22 @@ class SelfCodingEngine:
             # --- Register tool if requested ---
             reg_result = self._register_tool(plan, tool_manager)
             single_result["registration"] = reg_result
+
+            # Log retry memory result for tool registration
+            if reg_result.get("success", False):
+                self._log_retry_memory_result(
+                    task_id=f"tool_registration:{plan.get('name', 'unknown')}",
+                    success=True,
+                    reason="tool_registered_successfully",
+                    plan=plan
+                )
+            else:
+                self._log_retry_memory_result(
+                    task_id=f"tool_registration:{plan.get('name', 'unknown')}",
+                    success=False,
+                    reason=f"tool_registration_failed: {reg_result.get('error', 'unknown')}",
+                    plan=plan
+                )
 
             # --- Log success to ShortTermMemory if available ---
             if short_term_memory is not None and reg_result.get("success", False):
@@ -988,10 +1111,41 @@ class SelfCodingEngine:
             tb = traceback.format_exc()
             error_msg = f"Failed to import/instantiate tool: {str(import_error)}\n{tb}"
             single_result["registration"] = {"success": False, "error": error_msg}
+            
+            # Log retry memory result for import/instantiation failure
+            self._log_retry_memory_result(
+                task_id=f"tool_import:{plan.get('name', 'unknown')}",
+                success=False,
+                reason=f"import_error: {str(import_error)}",
+                plan=plan
+            )
+            
             self.logger.error(error_msg)
             return single_result
 
         return single_result
+
+    def _run_validation_pipeline(self, plan: Dict[str, Any], tool_code: str, test_code: str,
+                                tool_path: Optional[str], test_path: Optional[str]) -> Tuple[bool, List[Dict[str, Any]]]:
+        """
+        Run the validation pipeline using the ValidationChain.
+        
+        :param plan: Plan dictionary
+        :param tool_code: Generated tool code
+        :param test_code: Generated test code
+        :param tool_path: Path to tool file
+        :param test_path: Path to test file
+        :return: Tuple of (overall_success, detailed_results)
+        """
+        context = {
+            "plan": plan,
+            "tool_code": tool_code,
+            "test_code": test_code,
+            "tool_path": tool_path,
+            "test_path": test_path
+        }
+        
+        return self.validation_chain.run(context)
 
     def _check_standards(self, plan: Dict[str, Any], tool_code: str, test_code: str) -> List[str]:
         """
@@ -1014,6 +1168,33 @@ class SelfCodingEngine:
             errors.append("Plan missing file name")
             
         return errors
+
+    def _register_tool(self, plan: Dict[str, Any], tool_manager: Optional[ToolManager]) -> Dict[str, Any]:
+        """
+        Register a tool with the tool manager.
+        
+        :param plan: Plan dictionary containing tool information
+        :param tool_manager: Optional tool manager instance
+        :return: Registration result dictionary
+        """
+        if not tool_manager:
+            return {"success": True, "info": "No tool manager provided, skipping registration"}
+        
+        try:
+            # Extract necessary information from plan
+            class_name = plan.get("class")
+            tool_file = plan.get("file")
+            
+            if not class_name or not tool_file:
+                return {"success": False, "error": "Missing class name or tool file in plan"}
+            
+            # Register with tool manager
+            registration_result = tool_manager.register_tool(class_name, tool_file)
+            return registration_result
+            
+        except Exception as e:
+            tb = traceback.format_exc()
+            return {"success": False, "error": f"Exception during tool registration: {str(e)}\n{tb}"}
 
     def _log_to_notebook(self):
         """Placeholder for notebook logging compatibility."""
@@ -1203,160 +1384,4 @@ class SelfCodingEngine:
             iteration += 1
             registered_this_round = False
             
-            for validator_name, validator_info in list(loaded_validators.items()):
-                requires = validator_info['requires']
-                validator_obj = validator_info['validator']
-                
-                # Check if dependencies are satisfied
-                deps_satisfied, unsatisfied_deps = dependencies_satisfied(validator_name, requires)
-                
-                if deps_satisfied:
-                    try:
-                        # Instantiate if it's a class
-                        if hasattr(validator_obj, '__init__') and not callable(validator_obj):
-                            validator_instance = validator_obj()
-                        else:
-                            validator_instance = validator_obj
-                        
-                        # Register the validator
-                        self.register_validator_safely(validator_name, validator_instance)
-                        registered_validators.add(validator_name)
-                        registered_this_round = True
-                        
-                        # Remove from pending list
-                        del loaded_validators[validator_name]
-                        
-                        success_msg = f"Successfully registered extended validator: {validator_name}"
-                        self.logger.info(success_msg)
-                        if self.notebook:
-                            self.notebook.log("validator_registered", {
-                                "name": validator_name,
-                                "module": validator_info['module'],
-                                "requires": requires,
-                                "optional": validator_info['optional'],
-                                "status": "success"
-                            })
-                    
-                    except Exception as e:
-                        error_msg = f"Failed to instantiate/register validator {validator_name}: {str(e)}"
-                        self.logger.error(error_msg)
-                        failed_validators[validator_name] = {
-                            'error': str(e),
-                            'module': validator_info['module'],
-                            'stage': 'registration'
-                        }
-                        if self.notebook:
-                            self.notebook.log("validator_registration_failed", {
-                                "name": validator_name,
-                                "module": validator_info['module'],
-                                "error": str(e),
-                                "traceback": traceback.format_exc()
-                            })
-                        # Remove from pending list
-                        del loaded_validators[validator_name]
-                        registered_this_round = True
-                
-                else:
-                    # Dependencies not satisfied, will try again in next iteration
-                    if iteration == max_iterations - 1:  # Last iteration, log as skipped
-                        skip_msg = f"Skipping validator {validator_name} due to unsatisfied dependencies: {unsatisfied_deps}"
-                        self.logger.warning(skip_msg)
-                        skipped_validators[validator_name] = {
-                            'reason': 'unsatisfied_dependencies',
-                            'missing_deps': unsatisfied_deps,
-                            'module': validator_info['module']
-                        }
-                        if self.notebook:
-                            self.notebook.log("validator_skipped", {
-                                "name": validator_name,
-                                "module": validator_info['module'],
-                                "reason": "unsatisfied_dependencies",
-                                "missing_dependencies": unsatisfied_deps,
-                                "requires": requires
-                            })
-            
-            # If no validators were registered this round, break to avoid infinite loop
-            if not registered_this_round:
-                break
-        
-        # Log any remaining unregistered validators
-        for validator_name, validator_info in loaded_validators.items():
-            skip_msg = f"Could not register validator {validator_name} after {iteration} iterations"
-            self.logger.warning(skip_msg)
-            skipped_validators[validator_name] = {
-                'reason': 'dependency_resolution_failed',
-                'module': validator_info['module'],
-                'requires': validator_info['requires']
-            }
-            if self.notebook:
-                self.notebook.log("validator_dependency_resolution_failed", {
-                    "name": validator_name,
-                    "module": validator_info['module'],
-                    "requires": validator_info['requires'],
-                    "iterations": iteration
-                })
-        
-        # Final summary log
-        summary = {
-            "total_attempted": len(validator_files),
-            "successfully_registered": len(registered_validators),
-            "failed_imports": len([v for v in failed_validators.values() if v['stage'] == 'import']),
-            "failed_registrations": len([v for v in failed_validators.values() if v['stage'] in ['processing', 'registration']]),
-            "skipped_dependencies": len(skipped_validators),
-            "registered_validators": list(registered_validators),
-            "failed_validators": list(failed_validators.keys()),
-            "skipped_validators": list(skipped_validators.keys())
-        }
-        
-        self.logger.info(f"Extended validator loading complete: {summary}")
-        if self.notebook:
-            self.notebook.log("validator_loading_complete", summary)
-
-    def _setup_validation_chain(self):
-        """
-        Setup the validation chain with proper dependencies.
-        """
-        # Add validators to chain with dependencies
-        self.validation_chain.add_validator("PlanVerifier", self.validator_registry.get("PlanVerifier"))
-        self.validation_chain.add_validator("MathEvaluator", self.validator_registry.get("MathEvaluator"), 
-                                           dependencies=["PlanVerifier"])
-        
-        if "CodeQualityAssessor" in self.validator_registry:
-            self.validation_chain.add_validator("CodeQualityAssessor", self.validator_registry.get("CodeQualityAssessor"),
-                                               dependencies=["MathEvaluator"])
-        
-        if "SecurityValidator" in self.validator_registry:
-            deps = ["CodeQualityAssessor"] if "CodeQualityAssessor" in self.validator_registry else ["MathEvaluator"]
-            self.validation_chain.add_validator("SecurityValidator", self.validator_registry.get("SecurityValidator"),
-                                               dependencies=deps)
-        
-        # Add TestToolRunner last
-        if self.test_runner:
-            last_deps = []
-            if "SecurityValidator" in self.validator_registry:
-                last_deps = ["SecurityValidator"]
-            elif "CodeQualityAssessor" in self.validator_registry:
-                last_deps = ["CodeQualityAssessor"]
-            else:
-                last_deps = ["MathEvaluator"]
-            self.validation_chain.add_validator("TestToolRunner", self.test_runner, dependencies=last_deps)
-
-    def register_validator_safely(self, name: str, validator_cls: Callable):
-        """
-        Thread-safe method to register a validator in the validator registry.
-        
-        :param name: Unique string identifier for the validator.
-        :param validator_cls: Callable validator instance or class to register.
-        """
-        with self.validator_lock:
-            if not callable(validator_cls):
-                self.logger.warning(f"Validator '{name}' is not callable, skipping registration.")
-                return
-            
-            if name in self.validator_registry:
-                self.logger.info(f"Validator '{name}' already exists in registry, overwriting.")
-            
-            self.validator_registry[name] = validator_cls
-            self.logger.info(f"Validator '{name}' registered successfully in thread-safe manner.")
-
-    def _register_enhance
+            for validator_name
