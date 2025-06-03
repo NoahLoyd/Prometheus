@@ -116,31 +116,45 @@ class SelfCodingEngine:
         Preserves all existing validation logic and order.
         """
         # Defensive: do not overwrite existing names, log if registration fails.
-        enhanced_validators = [
-            ("CodeQualityAssessor", CodeQualityAssessor),
-            ("SecurityScanner", SecurityScanner),
-            ("BehavioralSimulator", BehavioralSimulator)
+        enhanced_validator_names = [
+            "code_quality_assessor",
+            "security_scanner", 
+            "behavioral_simulator"
         ]
-        for name, validator_cls in enhanced_validators:
-            if validator_cls is None:
-                self.logger.warning(f"Validator module '{name}' is missing or failed to import; skipping registration.")
+        
+        for validator_name in enhanced_validator_names:
+            # Use dynamic import for each validator
+            validator_module = import_validator(validator_name)
+            if validator_module is None:
+                self.logger.warning(f"Validator module '{validator_name}' is missing or failed to import; skipping registration.")
                 continue
+                
+            # Determine class name from module name (convert snake_case to PascalCase)
+            class_name = ''.join(word.capitalize() for word in validator_name.split('_'))
+            validator_cls = getattr(validator_module, class_name, None)
+            
+            if validator_cls is None:
+                self.logger.warning(f"Validator class '{class_name}' not found in module '{validator_name}'; skipping registration.")
+                continue
+                
             try:
                 instance = validator_cls()
             except Exception as e:
-                self.logger.error(f"Could not instantiate validator '{name}': {e}")
+                self.logger.error(f"Could not instantiate validator '{class_name}': {e}")
                 continue
             try:
-                self.register_validator(name, instance)
-                self.logger.info(f"Validator '{name}' registered and appended to VALIDATORS pipeline.")
+                self.register_validator(class_name, instance)
+                self.logger.info(f"Validator '{class_name}' registered and appended to VALIDATORS pipeline.")
             except ValueError as ve:
-                self.logger.warning(f"Validator '{name}' could not be registered: {ve}")
+                self.logger.warning(f"Validator '{class_name}' could not be registered: {ve}")
 
         # Ensure order: append to VALIDATORS after MathEvaluator/TestToolRunner, never before.
         # Existing pipeline: ["MathEvaluator", "PlanVerifier", "CodeCritic"]
-        for name, validator_cls in enhanced_validators:
-            if name not in self.VALIDATORS and validator_cls is not None and name in self.validator_registry:
-                self.VALIDATORS.append(name)
+        for validator_name in enhanced_validator_names:
+            # Convert module name to class name for checking registry
+            class_name = ''.join(word.capitalize() for word in validator_name.split('_'))
+            if class_name not in self.VALIDATORS and class_name in self.validator_registry:
+                self.VALIDATORS.append(class_name)
 
     def _get_logger(self):
         logger = logging.getLogger("Promethyn.SelfCodingEngine")
