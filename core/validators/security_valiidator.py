@@ -8,7 +8,9 @@ Created: 2025-05-30
 
 import ast
 import logging
+import os
 from typing import Tuple, Set, List
+from core.utils.path_utils import safe_path_join
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -65,7 +67,13 @@ def validate_security(file_path: str) -> Tuple[bool, str]:
             - message: Detailed explanation of validation results
     """
     try:
-        with open(file_path, 'r', encoding='utf-8') as file:
+        # Use safe_path_join to ensure path is secure
+        # Get the directory and filename
+        dir_path = os.path.dirname(file_path)
+        filename = os.path.basename(file_path)
+        safe_file_path = safe_path_join(dir_path, filename)
+        
+        with open(safe_file_path, 'r', encoding='utf-8') as file:
             source = file.read()
         
         # Parse the source code into an AST
