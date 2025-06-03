@@ -3,6 +3,7 @@ import sys
 import traceback
 import os
 import logging
+import threading
 from typing import Dict, Any, Optional, List, Callable, Tuple # <-- Added Tuple
 
 from tools.prompt_decomposer import PromptDecomposer
@@ -77,11 +78,12 @@ class SelfCodingEngine:
         self.notebook = notebook or AddOnNotebook()
         self.logger = self._get_logger()
         self.validator_registry = {}  # For future validator plug-in
+        self.validator_lock = threading.Lock()  # Thread-safe validator registration
         self.sandbox_runner = SandboxRunner() # <--- ADDED FOR SANDBOX INTEGRATION
 
         # --- Register core validators safely on instantiation ---
-        self.register_validator("MathEvaluator", MathEvaluator())
-        self.register_validator("PlanVerifier", PlanVerifier())
+        self.register_validator_safely("MathEvaluator", MathEvaluator())
+        self.register_validator_safely("PlanVerifier", PlanVerifier())
         register_validators(self.validator_registry)  # <-- Inject extended Promethyn validators here
 
         # --- Register TestToolRunner instance (instantiated ONCE here) ---
@@ -94,8 +96,7 @@ class SelfCodingEngine:
         # Ensure PlanVerifier ➝ MathEvaluator ➝ CodeQualityAssessor ➝ SecurityValidator ➝ TestToolRunner
         # Do NOT remove or overwrite any existing validators
         if validate_security is not None:
-            if "SecurityValidator" not in self.validator_registry:
-                self.register_validator("SecurityValidator", validate_security)
+            self.register_validator_safely("SecurityValidator", validate_security)
             # Insert SecurityValidator after CodeQualityAssessor, before TestToolRunner
             # If CodeQualityAssessor exists, insert after; else after PlanVerifier/MathEvaluator as fallback
             vlist = self.VALIDATORS
@@ -111,6 +112,24 @@ class SelfCodingEngine:
                 else:
                     idx = len(vlist)
                 vlist.insert(idx, "SecurityValidator")
+
+    def register_validator_safely(self, name: str, validator_cls: Callable):
+        """
+        Thread-safe method to register a validator in the validator registry.
+        
+        :param name: Unique string identifier for the validator.
+        :param validator_cls: Callable validator instance or class to register.
+        """
+        with self.validator_lock:
+            if not callable(validator_cls):
+                self.logger.warning(f"Validator '{name}' is not callable, skipping registration.")
+                return
+            
+            if name in self.validator_registry:
+                self.logger.info(f"Validator '{name}' already exists in registry, overwriting.")
+            
+            self.validator_registry[name] = validator_cls
+            self.logger.info(f"Validator '{name}' registered successfully in thread-safe manner.")
 
     def _register_enhanced_validators(self):
         """
@@ -142,11 +161,8 @@ class SelfCodingEngine:
             except Exception as e:
                 self.logger.error(f"Could not instantiate validator '{validator_class_name}': {e}")
                 continue
-            try:
-                self.register_validator(validator_class_name, instance)
-                self.logger.info(f"Validator '{validator_class_name}' registered and appended to VALIDATORS pipeline.")
-            except ValueError as ve:
-                self.logger.warning(f"Validator '{validator_class_name}' could not be registered: {ve}")
+            
+            self.register_validator_safely(validator_class_name, instance)
 
         # Ensure order: append to VALIDATORS after MathEvaluator/TestToolRunner, never before.
         # Existing pipeline: ["MathEvaluator", "PlanVerifier", "CodeCritic"]
