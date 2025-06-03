@@ -1,0 +1,470 @@
+"""
+Retry Memory System for Promethyn AGI
+====================================
+
+This module provides persistent memory tracking for all task attempts, enabling
+statistical learning, failure avoidance, and self-evolution capabilities.
+
+The system tracks every tool/module build attempt with full history persistence
+and concurrent access safety.
+"""
+
+import json
+import os
+import threading
+import time
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Any
+from pathlib import Path
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+class RetryMemory:
+    """
+    Persistent retry memory system that tracks task attempts across sessions.
+    
+    Features:
+    - Thread-safe operations with file locking
+    - Graceful handling of corrupted/missing data files
+    - Configurable history limits per task
+    - Detailed attempt tracking with timestamps and reasons
+    - Statistical analysis capabilities for future learning
+    """
+    
+    def __init__(self, memory_file: str = "retry_memory.json", max_history_per_task: int = 10):
+        """
+        Initialize the retry memory system.
+        
+        Args:
+            memory_file: Path to the JSON file storing retry history
+            max_history_per_task: Maximum number of attempts to keep per task
+        """
+        self.memory_file = Path(memory_file)
+        self.max_history_per_task = max_history_per_task
+        self._lock = threading.RLock()  # Reentrant lock for nested operations
+        self._memory_cache: Optional[Dict[str, List[Dict[str, Any]]]] = None
+        
+        # Ensure the memory directory exists
+        self.memory_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Initialize file if it doesn't exist
+        self._ensure_memory_file_exists()
+        
+        logger.info(f"RetryMemory initialized with file: {self.memory_file}")
+    
+    def _ensure_memory_file_exists(self) -> None:
+        """Create the memory file with empty structure if it doesn't exist."""
+        if not self.memory_file.exists():
+            try:
+                with open(self.memory_file, 'w', encoding='utf-8') as f:
+                    json.dump({}, f, indent=2)
+                logger.info(f"Created new retry memory file: {self.memory_file}")
+            except Exception as e:
+                logger.error(f"Failed to create retry memory file: {e}")
+                raise
+    
+    def _load_memory(self) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Load retry memory from disk with error handling.
+        
+        Returns:
+            Dictionary mapping task_id to list of attempt records
+        """
+        try:
+            with open(self.memory_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                
+            # Validate data structure
+            if not isinstance(data, dict):
+                logger.warning("Invalid memory file format, resetting to empty")
+                return {}
+                
+            # Validate each task's history
+            validated_data = {}
+            for task_id, history in data.items():
+                if isinstance(history, list):
+                    # Validate each attempt record
+                    valid_history = []
+                    for attempt in history:
+                        if (isinstance(attempt, dict) and 
+                            'status' in attempt and 
+                            'timestamp' in attempt):
+                            valid_history.append(attempt)
+                        else:
+                            logger.warning(f"Invalid attempt record for task {task_id}, skipping")
+                    
+                    if valid_history:
+                        validated_data[task_id] = valid_history
+                else:
+                    logger.warning(f"Invalid history format for task {task_id}, skipping")
+            
+            return validated_data
+            
+        except FileNotFoundError:
+            logger.info("Memory file not found, starting with empty memory")
+            self._ensure_memory_file_exists()
+            return {}
+        except json.JSONDecodeError as e:
+            logger.error(f"Corrupted memory file, backing up and starting fresh: {e}")
+            self._backup_corrupted_file()
+            return {}
+        except Exception as e:
+            logger.error(f"Unexpected error loading memory: {e}")
+            return {}
+    
+    def _backup_corrupted_file(self) -> None:
+        """Create a backup of corrupted memory file before resetting."""
+        try:
+            backup_name = f"{self.memory_file.stem}_corrupted_{int(time.time())}.json"
+            backup_path = self.memory_file.parent / backup_name
+            self.memory_file.rename(backup_path)
+            logger.info(f"Corrupted file backed up to: {backup_path}")
+            self._ensure_memory_file_exists()
+        except Exception as e:
+            logger.error(f"Failed to backup corrupted file: {e}")
+    
+    def _save_memory(self, memory_data: Dict[str, List[Dict[str, Any]]]) -> None:
+        """
+        Save retry memory to disk with atomic write operation.
+        
+        Args:
+            memory_data: Complete memory data to save
+        """
+        temp_file = self.memory_file.with_suffix('.tmp')
+        
+        try:
+            # Write to temporary file first (atomic operation)
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(memory_data, f, indent=2, ensure_ascii=False)
+            
+            # Replace original file atomically
+            temp_file.replace(self.memory_file)
+            logger.debug(f"Memory saved successfully to {self.memory_file}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save memory: {e}")
+            # Clean up temp file if it exists
+            if temp_file.exists():
+                temp_file.unlink()
+            raise
+    
+    def _get_current_timestamp(self) -> str:
+        """Get current UTC timestamp in ISO format."""
+        return datetime.now(timezone.utc).isoformat()
+    
+    def _trim_history(self, history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Trim history to maximum allowed length, keeping most recent attempts.
+        
+        Args:
+            history: List of attempt records
+            
+        Returns:
+            Trimmed history list
+        """
+        if len(history) <= self.max_history_per_task:
+            return history
+        
+        # Sort by timestamp (most recent first) and keep only the latest
+        sorted_history = sorted(history, 
+                              key=lambda x: x.get('timestamp', ''), 
+                              reverse=True)
+        
+        trimmed = sorted_history[:self.max_history_per_task]
+        logger.debug(f"Trimmed history from {len(history)} to {len(trimmed)} entries")
+        return trimmed
+    
+    def log_result(self, task_id: str, status: str, reason: Optional[str] = None) -> None:
+        """
+        Log a task attempt result to persistent memory.
+        
+        Args:
+            task_id: Unique identifier for the task/plan
+            status: Result status ("success" or "failure")
+            reason: Optional reason for the result
+            
+        Raises:
+            ValueError: If status is not "success" or "failure"
+        """
+        if status not in ("success", "failure"):
+            raise ValueError(f"Status must be 'success' or 'failure', got: {status}")
+        
+        with self._lock:
+            # Load current memory
+            memory_data = self._load_memory()
+            
+            # Create attempt record
+            attempt_record = {
+                "status": status,
+                "timestamp": self._get_current_timestamp(),
+                "reason": reason
+            }
+            
+            # Add to task history
+            if task_id not in memory_data:
+                memory_data[task_id] = []
+            
+            memory_data[task_id].append(attempt_record)
+            
+            # Trim history if needed
+            memory_data[task_id] = self._trim_history(memory_data[task_id])
+            
+            # Save to disk
+            self._save_memory(memory_data)
+            
+            # Invalidate cache
+            self._memory_cache = None
+            
+            logger.info(f"Logged {status} for task '{task_id}': {reason or 'No reason provided'}")
+    
+    def get_history(self, task_id: str) -> List[Dict[str, Any]]:
+        """
+        Get the complete attempt history for a task.
+        
+        Args:
+            task_id: Unique identifier for the task
+            
+        Returns:
+            List of attempt records, sorted by timestamp (most recent first)
+        """
+        with self._lock:
+            memory_data = self._load_memory()
+            history = memory_data.get(task_id, [])
+            
+            # Sort by timestamp (most recent first)
+            sorted_history = sorted(history, 
+                                  key=lambda x: x.get('timestamp', ''), 
+                                  reverse=True)
+            
+            # Return deep copy to prevent external modification
+            return [attempt.copy() for attempt in sorted_history]
+    
+    def has_failed_before(self, task_id: str) -> bool:
+        """
+        Check if a task has any failure records.
+        
+        Args:
+            task_id: Unique identifier for the task
+            
+        Returns:
+            True if the task has at least one failure record
+        """
+        history = self.get_history(task_id)
+        return any(attempt.get('status') == 'failure' for attempt in history)
+    
+    def get_failure_count(self, task_id: str) -> int:
+        """
+        Get the total number of failures for a task.
+        
+        Args:
+            task_id: Unique identifier for the task
+            
+        Returns:
+            Number of failure attempts
+        """
+        history = self.get_history(task_id)
+        return sum(1 for attempt in history if attempt.get('status') == 'failure')
+    
+    def get_success_count(self, task_id: str) -> int:
+        """
+        Get the total number of successes for a task.
+        
+        Args:
+            task_id: Unique identifier for the task
+            
+        Returns:
+            Number of successful attempts
+        """
+        history = self.get_history(task_id)
+        return sum(1 for attempt in history if attempt.get('status') == 'success')
+    
+    def get_last_attempt(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the most recent attempt for a task.
+        
+        Args:
+            task_id: Unique identifier for the task
+            
+        Returns:
+            Most recent attempt record or None if no history exists
+        """
+        history = self.get_history(task_id)
+        return history[0] if history else None
+    
+    def is_recently_successful(self, task_id: str) -> bool:
+        """
+        Check if the most recent attempt was successful.
+        
+        Args:
+            task_id: Unique identifier for the task
+            
+        Returns:
+            True if the last attempt was successful
+        """
+        last_attempt = self.get_last_attempt(task_id)
+        return last_attempt is not None and last_attempt.get('status') == 'success'
+    
+    def clear(self, task_id: str) -> None:
+        """
+        Clear all history for a specific task.
+        
+        Args:
+            task_id: Unique identifier for the task to clear
+        """
+        with self._lock:
+            memory_data = self._load_memory()
+            
+            if task_id in memory_data:
+                del memory_data[task_id]
+                self._save_memory(memory_data)
+                self._memory_cache = None
+                logger.info(f"Cleared history for task: {task_id}")
+            else:
+                logger.info(f"No history found for task: {task_id}")
+    
+    def clear_all(self) -> None:
+        """Clear all retry memory data."""
+        with self._lock:
+            self._save_memory({})
+            self._memory_cache = None
+            logger.info("Cleared all retry memory data")
+    
+    def get_all_task_ids(self) -> List[str]:
+        """
+        Get all task IDs that have history records.
+        
+        Returns:
+            List of task IDs with history
+        """
+        with self._lock:
+            memory_data = self._load_memory()
+            return list(memory_data.keys())
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """
+        Get comprehensive statistics about retry memory.
+        
+        Returns:
+            Dictionary containing various statistics
+        """
+        with self._lock:
+            memory_data = self._load_memory()
+            
+            total_tasks = len(memory_data)
+            total_attempts = sum(len(history) for history in memory_data.values())
+            total_failures = sum(
+                sum(1 for attempt in history if attempt.get('status') == 'failure')
+                for history in memory_data.values()
+            )
+            total_successes = sum(
+                sum(1 for attempt in history if attempt.get('status') == 'success')
+                for history in memory_data.values()
+            )
+            
+            # Calculate success rate
+            success_rate = (total_successes / total_attempts * 100) if total_attempts > 0 else 0
+            
+            # Find tasks with most failures
+            task_failure_counts = {
+                task_id: sum(1 for attempt in history if attempt.get('status') == 'failure')
+                for task_id, history in memory_data.items()
+            }
+            
+            most_failed_tasks = sorted(task_failure_counts.items(), 
+                                     key=lambda x: x[1], 
+                                     reverse=True)[:5]
+            
+            return {
+                "total_tasks": total_tasks,
+                "total_attempts": total_attempts,
+                "total_failures": total_failures,
+                "total_successes": total_successes,
+                "success_rate_percent": round(success_rate, 2),
+                "most_failed_tasks": most_failed_tasks,
+                "memory_file_size_bytes": self.memory_file.stat().st_size if self.memory_file.exists() else 0
+            }
+    
+    def export_history(self, output_file: str) -> None:
+        """
+        Export complete retry history to a file.
+        
+        Args:
+            output_file: Path to export file
+        """
+        with self._lock:
+            memory_data = self._load_memory()
+            
+            export_data = {
+                "export_timestamp": self._get_current_timestamp(),
+                "statistics": self.get_statistics(),
+                "history_data": memory_data
+            }
+            
+            export_path = Path(output_file)
+            export_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(export_path, 'w', encoding='utf-8') as f:
+                json.dump(export_data, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"Exported retry history to: {export_path}")
+    
+    def __repr__(self) -> str:
+        """String representation of RetryMemory instance."""
+        stats = self.get_statistics()
+        return (f"RetryMemory(file='{self.memory_file}', "
+                f"tasks={stats['total_tasks']}, "
+                f"attempts={stats['total_attempts']}, "
+                f"success_rate={stats['success_rate_percent']}%)")
+
+
+# Convenience function for global instance
+_global_retry_memory: Optional[RetryMemory] = None
+
+def get_retry_memory(memory_file: str = "retry_memory.json") -> RetryMemory:
+    """
+    Get or create a global RetryMemory instance.
+    
+    Args:
+        memory_file: Path to memory file (only used on first call)
+        
+    Returns:
+        Global RetryMemory instance
+    """
+    global _global_retry_memory
+    if _global_retry_memory is None:
+        _global_retry_memory = RetryMemory(memory_file)
+    return _global_retry_memory
+
+
+# Example usage and testing
+if __name__ == "__main__":
+    # Create retry memory instance
+    rm = RetryMemory("test_retry_memory.json")
+    
+    # Test logging results
+    print("Testing RetryMemory system...")
+    
+    # Log some test attempts
+    rm.log_result("build_neural_network", "failure", "Missing dependencies")
+    rm.log_result("build_neural_network", "failure", "Import error in torch")
+    rm.log_result("build_neural_network", "success", "Successfully built and tested")
+    
+    rm.log_result("file_processor", "success", "File processing completed")
+    rm.log_result("file_processor", "failure", "Permission denied")
+    
+    # Test retrieval methods
+    print(f"\nNeural network history: {rm.get_history('build_neural_network')}")
+    print(f"Has neural network failed before? {rm.has_failed_before('build_neural_network')}")
+    print(f"Is neural network recently successful? {rm.is_recently_successful('build_neural_network')}")
+    
+    # Print statistics
+    print(f"\nStatistics: {rm.get_statistics()}")
+    
+    # Test export
+    rm.export_history("retry_memory_export.json")
+    
+    print("\nTesting completed successfully!")
