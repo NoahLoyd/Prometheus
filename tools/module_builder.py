@@ -2,6 +2,7 @@ import os
 import re
 from typing import Dict, Any, List, Optional
 from validators.security_validator import validate_security
+from core.utils.path_utils import safe_path_join
 
 class ModuleBuilderTool:
     """
@@ -245,7 +246,10 @@ class ModuleBuilderTool:
         Raises:
             Exception: Propagates file system errors.
         """
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        # Using safe_path_join to prevent directory traversal when creating directories
+        # TODO: review base_dir - using current working directory as base for now
+        safe_dir = safe_path_join(".", os.path.dirname(file_path))
+        os.makedirs(safe_dir, exist_ok=True)
         if os.path.exists(file_path) and not overwrite_allowed:
             results["skipped"].append(file_path)
             return
@@ -290,7 +294,8 @@ class ModuleBuilderTool:
         snake = self._to_snake_case(filename.replace(".py", "")) + ".py"
         dest_dir = self.MODULE_TYPE_DIRS.get(mod_type, "")
         if dest_dir:
-            routed = os.path.join(dest_dir, snake)
+            # Using safe_path_join with dest_dir as base to prevent directory traversal
+            routed = safe_path_join(dest_dir, snake)
         else:
             routed = file_path
         return routed
@@ -394,7 +399,8 @@ def test_placeholder():
             return validators
         for fname in os.listdir(validator_dir):
             if fname.endswith(".py"):
-                v_path = os.path.join(validator_dir, fname)
+                # Using safe_path_join with validator_dir as base to prevent directory traversal
+                v_path = safe_path_join(validator_dir, fname)
                 try:
                     ns = {}
                     with open(v_path, "r", encoding="utf-8") as f:
