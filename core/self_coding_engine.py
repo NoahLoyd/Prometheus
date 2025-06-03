@@ -18,6 +18,7 @@ from tools.test_tool_runner import TestToolRunner  # <--- NEW IMPORT
 from core.validators.extended_validators import register_validators
 from core.sandbox_runner import SandboxRunner # <--- ADDED FOR SANDBOX INTEGRATION
 from core.utils.path_utils import safe_path_join, import_validator
+from memory.retry_memory import get_retry_memory  # <--- NEW: Retry memory import
 
 # --- BEGIN: Updated Validator Import System ---
 def import_validator_fallback(name):
@@ -242,6 +243,7 @@ class SelfCodingEngine:
       - Generates, writes, validates, and registers each tool.
       - Logs all outcomes for strategic learning.
       - Enforces Promethyn standards and supports future extensibility.
+      - Uses persistent retry memory to learn from failures and successes.
     """
 
     # --- Validator hooks (extensible, for future use) ---
@@ -255,6 +257,25 @@ class SelfCodingEngine:
         self.validator_registry = {}  # For future validator plug-in
         self.validator_lock = threading.Lock()  # Thread-safe validator registration
         self.sandbox_runner = SandboxRunner() # <--- ADDED FOR SANDBOX INTEGRATION
+        
+        # --- NEW: Initialize retry memory system ---
+        try:
+            self.retry_memory = get_retry_memory()
+            self.logger.info("Retry memory system initialized successfully")
+            if self.notebook:
+                self.notebook.log("retry_memory_init", {
+                    "status": "success",
+                    "memory_file": str(self.retry_memory.memory_file),
+                    "max_history_per_task": self.retry_memory.max_history_per_task
+                })
+        except Exception as e:
+            self.logger.error(f"Failed to initialize retry memory: {e}")
+            self.retry_memory = None
+            if self.notebook:
+                self.notebook.log("retry_memory_init_failed", {
+                    "error": str(e),
+                    "fallback": "continuing_without_retry_memory"
+                })
 
         # Initialize validation chain
         self.validation_chain = ValidationChain(self.logger)
@@ -296,6 +317,129 @@ class SelfCodingEngine:
 
         # Setup validation chain with dependencies
         self._setup_validation_chain()
+
+    def _generate_task_id(self, plan: Dict[str, Any], operation_type: str = "tool") -> str:
+        """
+        Generate a consistent task_id for retry memory tracking.
+        
+        :param plan: Plan dictionary containing tool/module information
+        :param operation_type: Type of operation (tool, module, validation, etc.)
+        :return: Consistent task_id string
+        """
+        # Use the plan name if available, otherwise class name or file name
+        name = (plan.get("name") or 
+                plan.get("class") or 
+                plan.get("file", "").replace(".py", "") or 
+                "unknown")
+        
+        # Clean the name for consistency
+        name = name.replace(" ", "_").replace("-", "_").lower()
+        
+        return f"{operation_type}::{name}"
+
+    def _check_retry_memory_before_attempt(self, task_id: str, plan: Dict[str, Any]) -> bool:
+        """
+        Check retry memory before attempting a task and log relevant information.
+        
+        :param task_id: Task identifier for retry memory lookup
+        :param plan: Plan dictionary for logging context
+        :return: True if should proceed, False if should skip due to repeated failures
+        """
+        if not self.retry_memory:
+            return True  # No retry memory available, proceed normally
+        
+        try:
+            # Check if this task has failed before
+            has_failed = self.retry_memory.has_failed_before(task_id)
+            failure_count = self.retry_memory.get_failure_count(task_id)
+            success_count = self.retry_memory.get_success_count(task_id)
+            last_attempt = self.retry_memory.get_last_attempt(task_id)
+            
+            # Log retry memory status
+            retry_status = {
+                "task_id": task_id,
+                "has_failed_before": has_failed,
+                "failure_count": failure_count,
+                "success_count": success_count,
+                "last_attempt": last_attempt,
+                "plan_name": plan.get("name", "N/A")
+            }
+            
+            if has_failed:
+                self.logger.warning(f"Task '{task_id}' has failed {failure_count} times before. Last attempt: {last_attempt}")
+                if self.notebook:
+                    self.notebook.log("retry_memory_check_failed_before", retry_status)
+                
+                # Decision logic: Skip if too many recent failures
+                if failure_count >= 3 and success_count == 0:
+                    skip_reason = f"Skipping task '{task_id}' due to {failure_count} consecutive failures with no successes"
+                    self.logger.warning(skip_reason)
+                    if self.notebook:
+                        self.notebook.log("retry_memory_skip_task", {
+                            **retry_status,
+                            "reason": skip_reason,
+                            "action": "skipped"
+                        })
+                    return False
+            else:
+                self.logger.info(f"Task '{task_id}' has no previous failures. Proceeding with attempt.")
+                if self.notebook:
+                    self.notebook.log("retry_memory_check_clean", retry_status)
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error checking retry memory for task '{task_id}': {e}")
+            if self.notebook:
+                self.notebook.log("retry_memory_check_error", {
+                    "task_id": task_id,
+                    "error": str(e),
+                    "action": "proceeding_despite_error"
+                })
+            return True  # Proceed despite retry memory error
+
+    def _log_retry_memory_result(self, task_id: str, success: bool, reason: Optional[str] = None, plan: Optional[Dict[str, Any]] = None):
+        """
+        Log the result of a task attempt to retry memory.
+        
+        :param task_id: Task identifier
+        :param success: Whether the task succeeded
+        :param reason: Optional reason for success/failure
+        :param plan: Optional plan context for enhanced logging
+        """
+        if not self.retry_memory:
+            return
+        
+        try:
+            status = "success" if success else "failure"
+            self.retry_memory.log_result(task_id, status, reason)
+            
+            # Enhanced logging
+            log_data = {
+                "task_id": task_id,
+                "status": status,
+                "reason": reason,
+                "plan_name": plan.get("name", "N/A") if plan else "N/A"
+            }
+            
+            if success:
+                self.logger.info(f"Logged SUCCESS for task '{task_id}': {reason or 'No reason provided'}")
+                if self.notebook:
+                    self.notebook.log("retry_memory_success_logged", log_data)
+            else:
+                self.logger.warning(f"Logged FAILURE for task '{task_id}': {reason or 'No reason provided'}")
+                if self.notebook:
+                    self.notebook.log("retry_memory_failure_logged", log_data)
+                    
+        except Exception as e:
+            self.logger.error(f"Failed to log retry memory result for task '{task_id}': {e}")
+            if self.notebook:
+                self.notebook.log("retry_memory_log_error", {
+                    "task_id": task_id,
+                    "intended_status": "success" if success else "failure",
+                    "intended_reason": reason,
+                    "error": str(e)
+                })
 
     def fallback_if_validator_missing(self, name: str, context: dict) -> ValidationResult:
         """
@@ -721,13 +865,21 @@ class SelfCodingEngine:
 
     def _run_validation_pipeline(self, plan: Dict[str, Any], tool_code: str, test_code: str, tool_path: Optional[str] = None, test_path: Optional[str] = None) -> Tuple[bool, List[Dict[str, Any]]]:
         """
-        Runs validation pipeline using ValidationChain.
+        Runs validation pipeline using ValidationChain with retry memory integration.
         Uses self.validator_registry for validators, executed through ValidationChain.
-        Logs individual validator failures/exceptions to self.notebook.
+        Logs individual validator failures/exceptions to self.notebook and retry memory.
         Returns:
             - bool: Overall validation success.
             - List[Dict[str, Any]]: A list of dictionaries, each containing 'validator' name and 'result'.
         """
+        # Generate task ID for validation pipeline
+        validation_task_id = self._generate_task_id(plan, "validation")
+        
+        # Check retry memory for validation attempts
+        if not self._check_retry_memory_before_attempt(validation_task_id, plan):
+            self.logger.warning(f"Skipping validation for plan '{plan.get('name', 'N/A')}' due to retry memory policy")
+            return False, [{"validator": "retry_memory_skip", "result": {"success": False, "error": "Skipped due to retry memory policy"}}]
+        
         # Prepare context for validators
         context = {
             "plan": plan,
@@ -737,33 +889,58 @@ class SelfCodingEngine:
             "test_path": test_path
         }
         
-        # Run validation chain
-        overall_success, detailed_results = self.validation_chain.run(context)
-        
-        # Log results to notebook
-        for result_entry in detailed_results:
-            validator_name = result_entry["validator"]
-            result = result_entry["result"]
+        try:
+            # Run validation chain
+            overall_success, detailed_results = self.validation_chain.run(context)
             
-            if not result.get("success", True):
-                if self.notebook:
-                    self.notebook.log("validator_failure", {
-                        "plan": plan,
-                        "validator": validator_name,
-                        "error": result.get("error", "Unknown validation error")
-                    })
-                self.logger.warning(f"Validator '{validator_name}' failed for plan: {plan.get('name', 'N/A')}. Error: {result.get('error')}")
+            # Log results to notebook
+            for result_entry in detailed_results:
+                validator_name = result_entry["validator"]
+                result = result_entry["result"]
+                
+                if not result.get("success", True):
+                    if self.notebook:
+                        self.notebook.log("validator_failure", {
+                            "plan": plan,
+                            "validator": validator_name,
+                            "error": result.get("error", "Unknown validation error")
+                        })
+                    self.logger.warning(f"Validator '{validator_name}' failed for plan: {plan.get('name', 'N/A')}. Error: {result.get('error')}")
+                
+                if result.get("exception"):
+                    if self.notebook:
+                        self.notebook.log("validator_exception", {
+                            "plan": plan,
+                            "validator": validator_name,
+                            "exception": result.get("error"),
+                            "traceback": result.get("exception")
+                        })
             
-            if result.get("exception"):
-                if self.notebook:
-                    self.notebook.log("validator_exception", {
-                        "plan": plan,
-                        "validator": validator_name,
-                        "exception": result.get("error"),
-                        "traceback": result.get("exception")
-                    })
-        
-        return overall_success, detailed_results
+            # Log validation result to retry memory
+            validation_reason = None
+            if not overall_success:
+                failed_validators = [
+                    f"{item['validator']}: {item['result'].get('error', 'Failed')}"
+                    for item in detailed_results
+                    if not item['result'].get('success', item['result'].get('passed', True))
+                ]
+                validation_reason = f"Validation failed: {'; '.join(failed_validators)}"
+            else:
+                validation_reason = "All validators passed successfully"
+            
+            self._log_retry_memory_result(validation_task_id, overall_success, validation_reason, plan)
+            
+            return overall_success, detailed_results
+            
+        except Exception as e:
+            tb_str = traceback.format_exc()
+            error_msg = f"Validation pipeline exception: {str(e)}"
+            self.logger.error(f"{error_msg}\n{tb_str}")
+            
+            # Log validation pipeline failure to retry memory
+            self._log_retry_memory_result(validation_task_id, False, f"Pipeline exception: {str(e)}", plan)
+            
+            return False, [{"validator": "validation_pipeline", "result": {"success": False, "error": error_msg, "exception": tb_str}}]
 
     def process_prompt(
         self,
@@ -772,12 +949,13 @@ class SelfCodingEngine:
         short_term_memory: Optional[dict] = None,
     ) -> dict:
         """
-        Process a prompt that may request one or many tools:
+        Process a prompt that may request one or many tools with retry memory integration:
         - Decomposes prompt into structured plans (multi-tool aware).
+        - Checks retry memory before attempting each tool generation.
         - Enforces overwrite protection: skips or errors if code or test file exists.
         - Writes tool code to /tools/, test code to /test/.
         - Dynamically imports, instantiates, and validates each tool using run('test').
-        - Logs all successes/failures.
+        - Logs all successes/failures to retry memory system.
         - Failed generations/validations are added to retry_later and logged.
         - Successes are saved to short_term_memory['generated_tools'] if provided.
         - Performs Promethyn internal standards checks.
@@ -798,6 +976,11 @@ class SelfCodingEngine:
             if self.notebook:
                 self.notebook.log("prompt_decomposition_failure", {"prompt": prompt, "error": log_msg})
             self.logger.error(log_msg)
+            
+            # Log decomposition failure to retry memory
+            decomp_task_id = f"decomposition::{hash(prompt) % 10000}"  # Simple hash for prompt-based task ID
+            self._log_retry_memory_result(decomp_task_id, False, f"Decomposition failed: {str(e)}")
+            
             return {"success": False, "error": log_msg, "results": [], "retry_later": []}
 
         # 2. For each tool, run the generation/validation/registration pipeline
@@ -809,9 +992,22 @@ class SelfCodingEngine:
             tool_code = plan.get("code")
             test_code = plan.get("test_code")
 
+            # Generate task ID for this specific tool/plan
+            tool_task_id = self._generate_task_id(plan, "tool")
+            
+            # Check retry memory before attempting this tool
+            if not self._check_retry_memory_before_attempt(tool_task_id, plan):
+                skip_msg = f"Skipping tool generation for '{plan.get('name', 'N/A')}' due to retry memory policy"
+                single_result["registration"] = {"success": False, "error": skip_msg}
+                retry_later.append({"plan": plan, "reason": skip_msg})
+                results.append(single_result)
+                self.logger.warning(skip_msg)
+                continue
+
             # Compute output paths
             tool_path = safe_path_join("tools", tool_file) if tool_file else None
             test_path = safe_path_join("test", test_file) if test_file else None  # test/ not tests/
+            
             try:
                 # --- Overwrite protection: skip or error if exists ---
                 if tool_path and os.path.exists(tool_path):
@@ -820,6 +1016,8 @@ class SelfCodingEngine:
                     retry_later.append({"plan": plan, "reason": msg})
                     results.append(single_result)
                     self.logger.warning(msg)
+                    # Log to retry memory as a failure due to file conflict
+                    self._log_retry_memory_result(tool_task_id, False, "File already exists", plan)
                     continue
                 if test_path and os.path.exists(test_path):
                     msg = f"Test file exists, skipping: {test_path}"
@@ -827,6 +1025,8 @@ class SelfCodingEngine:
                     retry_later.append({"plan": plan, "reason": msg})
                     results.append(single_result)
                     self.logger.warning(msg)
+                    # Log to retry memory as a failure due to file conflict
+                    self._log_retry_memory_result(tool_task_id, False, "Test file already exists", plan)
                     continue
 
                 # --- Write the main tool code file ---
@@ -847,8 +1047,9 @@ class SelfCodingEngine:
                     results.append(single_result)
                     if self.notebook:
                          self.notebook.log("plan_execution_failure", {"plan": plan, "error": err_msg, "missing": missing_info})
+                    # Log to retry memory as a failure due to missing plan information
+                    self._log_retry_memory_result(tool_task_id, False, err_msg, plan)
                     continue
-
 
                 # --- Write the test file ---
                 if test_path and test_code:
@@ -863,8 +1064,7 @@ class SelfCodingEngine:
                 elif test_path and not test_code:
                      self.logger.warning(f"Test path {test_path} specified for plan {plan.get('name', 'N/A')} but no test_code provided. Empty or no test file will be written.")
 
-
-                # --- Promethyn internal standards check ---\
+                # --- Promethyn internal standards check ---
                 standards_errors = self._check_standards(plan, tool_code, test_code)
                 if standards_errors:
                     err_msg = f"Promethyn standards not met: {standards_errors}"
@@ -874,6 +1074,8 @@ class SelfCodingEngine:
                         self.notebook.log("standards_failure", {"plan": plan, "errors": standards_errors})
                     self.logger.error(err_msg)
                     results.append(single_result)
+                    # Log to retry memory as a failure due to standards violation
+                    self._log_retry_memory_result(tool_task_id, False, f"Standards check failed: {standards_errors}", plan)
                     continue
 
                 # --- BEGIN: Promethyn AGI Validation Pipeline using _run_validation_pipeline ---
@@ -910,6 +1112,8 @@ class SelfCodingEngine:
                             "detailed_errors": specific_errors
                         })
                     results.append(single_result)
+                    # Log to retry memory as a failure due to validation failure
+                    self._log_retry_memory_result(tool_task_id, False, augmented_fail_msg, plan)
                     continue
                 else:
                     if self.notebook:
@@ -954,6 +1158,8 @@ class SelfCodingEngine:
                                 self.logger.error(val_msg)
                                 results.append(single_result)
                                 validators_passed_secondary_check = False
+                                # Log to retry memory as a failure due to secondary validator failure
+                                self._log_retry_memory_result(tool_task_id, False, val_msg, plan)
                                 break 
                         except Exception as val_ex:
                             tb = traceback.format_exc()
@@ -969,6 +1175,8 @@ class SelfCodingEngine:
                             self.logger.error(val_msg)
                             results.append(single_result)
                             validators_passed_secondary_check = False
+                            # Log to retry memory as a failure due to secondary validator exception
+                            self._log_retry_memory_result(tool_task_id, False, val_msg, plan)
                             break
                     else:
                         # --- NEW: Fallback for missing validators ---
@@ -1015,6 +1223,8 @@ class SelfCodingEngine:
                             self._log_to_notebook() # Original call
                         self.logger.error(fail_msg)
                         results.append(single_result)
+                        # Log to retry memory as a failure due to final test failure
+                        self._log_retry_memory_result(tool_task_id, False, fail_msg, plan)
                         continue
                 
                 # --- BEGIN SANDBOX INTEGRATION ---
@@ -1022,6 +1232,10 @@ class SelfCodingEngine:
                 sandbox_run_successful = True # Assume true unless sandbox fails or is not applicable
                 if tool_path and hasattr(self, 'sandbox_runner') and self.sandbox_runner:
                     self.logger.info(f"Attempting sandbox execution for tool: {tool_path} from plan: {plan.get('name', 'N/A')}")
+                    
+                    # Generate sandbox-specific task ID
+                    sandbox_task_id = self._generate_task_id(plan, "sandbox")
+                    
                     try:
                         # Ensure the argument name matches the SandboxRunner's method signature
                         sandbox_result = self.sandbox_runner.run_python_file_in_sandbox(python_file_path=tool_path) 
@@ -1055,9 +1269,14 @@ class SelfCodingEngine:
                                     "error": fail_msg, 
                                     "sandbox_result_details": sandbox_result # Full result for this specific failure log
                                 })
+                            # Log to retry memory as a failure due to sandbox execution failure
+                            self._log_retry_memory_result(tool_task_id, False, fail_msg, plan)
+                            self._log_retry_memory_result(sandbox_task_id, False, error_details, plan)
                             continue # Skip to next plan, do not register
                         else:
                             self.logger.info(f"Sandbox execution successful for tool '{tool_path}'. stdout: {sandbox_result.get('stdout', 'N/A')}")
+                            # Log sandbox success to retry memory
+                            self._log_retry_memory_result(sandbox_task_id, True, "Sandbox execution successful", plan)
                             # Optionally log specific success if needed for sandbox execution
                             # if self.notebook:
                             #    self.notebook.log("sandbox_execution_success", {"plan": plan, "tool_path": tool_path, "sandbox_result_details": sandbox_result})
@@ -1077,6 +1296,9 @@ class SelfCodingEngine:
                                 "error": str(e_sandbox), 
                                 "traceback": tb_sandbox
                             })
+                        # Log to retry memory as a failure due to sandbox exception
+                        self._log_retry_memory_result(tool_task_id, False, fail_msg, plan)
+                        self._log_retry_memory_result(sandbox_task_id, False, f"Exception: {str(e_sandbox)}", plan)
                         continue # Skip to next plan, do not register
                 elif not tool_path and hasattr(self, 'sandbox_runner') and self.sandbox_runner:
                     # Log if sandbox was skipped due to no tool_path, but don't mark as failure for this reason alone.
@@ -1086,226 +1308,7 @@ class SelfCodingEngine:
                 # subsequent steps including registration will be skipped.
                 # --- END SANDBOX INTEGRATION ---
 
-                # --- AGI EXTENSION: Enhanced Validator Audit Logging ---\
+                # --- AGI EXTENSION: Enhanced Validator Audit Logging ---
                 # This audit log remains, it iterates self.VALIDATORS.
                 for validator_name in self.VALIDATORS:
-                    validator = self.validator_registry.get(validator_name)
-                    if validator:
-                        try:
-                            # Handle SecurityValidator signature
-                            if validator_name == "SecurityValidator":
-                                if tool_path and callable(validator):
-                                    validator_result = validator(tool_path)
-                                else:
-                                    validator_result = {"success": True, "info": f"Audit for {validator_name} skipped."}
-                            else:
-                                validator_result = validator(plan, tool_code, test_code)
-                            audit_log = {
-                                "plan": plan,
-                                "validator": validator_name,
-                                "result": validator_result,
-                            }
-                            if self.notebook:
-                                self.notebook.log("validator_audit", audit_log)
-                            self.logger.debug(f"Validator '{validator_name}' audit outcome: {validator_result}")
-                        except Exception as val_ex:
-                            audit_log = {
-                                "plan": plan,
-                                "validator": validator_name,
-                                "exception": str(val_ex),
-                            }
-                            if self.notebook:
-                                self.notebook.log("validator_audit_exception", audit_log)
-                            self.logger.debug(f"Validator '{validator_name}' exception during audit: {val_ex}")
-                    else:
-                        # --- NEW: Fallback for missing validators in audit log ---
-                        context = {
-                            "plan": plan,
-                            "tool_code": tool_code,
-                            "test_code": test_code,
-                            "tool_path": tool_path,
-                            "test_path": test_path
-                        }
-                        fallback_result = self.fallback_if_validator_missing(validator_name, context)
-                        audit_log = {
-                            "plan": plan,
-                            "validator": validator_name,
-                            "fallback_result": fallback_result.__dict__,
-                            "audit_type": "fallback_used"
-                        }
-                        if self.notebook:
-                            self.notebook.log("validator_audit_fallback", audit_log)
-                        self.logger.debug(f"Validator '{validator_name}' audit used fallback: {fallback_result}")
-
-                # --- Dynamic import of tool module and class ---\
-                module_path = tool_path[:-3].replace("/", ".").replace("\\\\", ".") if tool_path and tool_path.endswith(".py") else (tool_path.replace("/", ".").replace("\\\\", ".") if tool_path else [...]
-                if not module_path:
-                    raise ValueError(f"Cannot determine module path from tool_path: {tool_path}")
-
-                if module_path in sys.modules:
-                    del sys.modules[module_path] # Force reload
-                module = importlib.import_module(module_path)
-                tool_class = getattr(module, class_name, None)
-                if tool_class is None:
-                    raise ImportError(f"Class '{class_name}' not found in '{module_path}'.")
-
-                # --- Instantiate tool and validate by running test ---\
-                tool_instance = tool_class()
-                if not hasattr(tool_instance, "run"):
-                    raise AttributeError(f"Tool '{class_name}' does not implement a 'run' method.")
-
-                # Validate using run("test")
-                try:
-                    validation_result = tool_instance.run("test") # This is the tool's own test method
-                    single_result["validation"] = validation_result # Store this specific validation
-                    if self.notebook:
-                        self.notebook.log("tool_run_test_method", { # Changed log key for clarity
-                            "plan": plan,
-                            "result": validation_result,
-                            "status": "success"
-                        })
-                    self.logger.info(f"Tool's run('test') method for '{class_name}' succeeded: {validation_result}")
-                    if not (isinstance(validation_result, dict) and validation_result.get("success", False)):
-                        fail_msg = f"Tool's run('test') method validation failed: {validation_result}"
-                        single_result["registration"] = {"success": False, "error": fail_msg}
-                        retry_later.append({"plan": plan, "reason": fail_msg})
-                        if self.notebook:
-                            self.notebook.log("tool_run_test_method_failure", { # Changed log key
-                                "plan": plan,
-                                "validation": validation_result,
-                                "error": fail_msg,
-                            })
-                        self.logger.error(fail_msg)
-                        results.append(single_result)
-                        continue
-
-                except Exception as val_err:
-                    tb = traceback.format_exc()
-                    fail_msg = f"Tool's run('test') method raised exception: {val_err}\n{tb}"
-                    single_result["registration"] = {"success": False, "error": fail_msg}
-                    retry_later.append({"plan": plan, "reason": fail_msg})
-                    if self.notebook:
-                        self.notebook.log("tool_run_test_method_exception", { # Changed log key
-                            "plan": plan,
-                            "error": fail_msg,
-                        })
-                    self.logger.error(f"Tool's run('test') for '{class_name}' raised exception: {fail_msg}")
-                    results.append(single_result)
-                    continue
-
-                # --- Register tool if requested ---\
-                # This is reached only if all prior checks, including sandbox, passed.
-                reg_result = self._register_tool(plan, tool_manager)
-                single_result["registration"] = reg_result
-
-                # --- Log success to ShortTermMemory if available ---\
-                if short_term_memory is not None and reg_result.get("success", False):
-                    if "generated_tools" not in short_term_memory:
-                        short_term_memory["generated_tools"] = []
-                    short_term_memory["generated_tools"].append({
-                        "plan": plan,
-                        "tool_file": tool_file,
-                        "test_file": test_file,
-                        "class": class_name,
-                    })
-
-            except Exception as e:
-                tb = traceback.format_exc()
-                fail_msg = f"Module build or validation error for plan {plan.get('name', 'N/A')}: {e}\n{tb}"
-                single_result["registration"] = {"success": False, "error": fail_msg}
-                retry_later.append({"plan": plan, "reason": fail_msg})
-                if self.notebook:
-                    self.notebook.log("module_build_or_validation_error", {
-                        "plan": plan,
-                        "error": str(e),
-                        "traceback": tb,
-                    })
-                self.logger.error(fail_msg)
-            results.append(single_result)
-
-        # --- Log retry_later to memory or AddOnNotebook ---\
-        if retry_later:
-            retry_log = {"retry_later": retry_later, "prompt": prompt}
-            if short_term_memory is not None:
-                short_term_memory.setdefault("tool_retry_queue", []).extend(retry_later)
-            if self.notebook:
-                self.notebook.log("tool_retry_later", retry_log)
-            for retry_item in retry_later: # Renamed to avoid conflict
-                self._schedule_retry(retry_item["plan"], retry_item["reason"])
-
-        return {
-            "success": len(retry_later) == 0 and any(r.get("registration", {}).get("success") for r in results if "registration" in r), # More robust success check
-            "results": results,
-            "retry_later": retry_later,
-        }
-
-    def _register_tool(
-        self,
-        plan: Dict[str, Any],
-        tool_manager: Optional[ToolManager]
-    ) -> Dict[str, Any]:
-        """
-        Dynamically imports, instantiates, and registers a tool class from a generated module.
-        Returns a dict with success status and error message if any.
-        Logs registration failures to AddOnNotebook if available.
-        """
-        try:
-            file_path = plan.get("file") # This is tool_file, effectively tool_path basis
-            class_name = plan.get("class")
-            if not file_path or not class_name:
-                msg = "Missing 'file' or 'class' in plan for tool registration."
-                if self.notebook:
-                    self.notebook.log("self_coding_engine", "TOOL_REGISTRATION_ERROR", msg, metadata={"plan": plan, "error": msg})
-                self.logger.error(msg)
-                return {"success": False, "error": msg}
-
-            # Convert file path to module path (e.g. tools/time_tracker.py -> tools.time_tracker)
-            # Assuming file_path is relative to repo root, e.g., "tools/my_tool.py"
-            module_path = file_path[:-3].replace("/", ".").replace("\\\\", ".") if file_path.endswith(".py") else file_path.replace("/", ".").replace("\\\\", ".")
-            
-            # Remove module from sys.modules if it's already loaded (force reload)
-            if module_path in sys.modules:
-                del sys.modules[module_path]
-
-            try:
-                module = importlib.import_module(module_path)
-            except Exception as imp_exc:
-                tb_imp = traceback.format_exc()
-                msg = f"Failed to import module '{module_path}': {imp_exc}\n{tb_imp}"
-                if self.notebook:
-                    self.notebook.log("self_coding_engine", "TOOL_IMPORT_ERROR", msg, metadata={"plan": plan, "error": msg, "module_path": module_path})
-                self.logger.error(msg)
-                return {"success": False, "error": msg}
-
-            tool_class = getattr(module, class_name, None)
-            if tool_class is None:
-                msg = f"Class '{class_name}' not found in module '{module_path}'."
-                if self.notebook:
-                    self.notebook.log("self_coding_engine", "TOOL_CLASS_ERROR", msg, metadata={"plan": plan, "error": msg, "module_path": module_path, "class_name": class_name})
-                self.logger.error(msg)
-                return {"success": False, "error": msg}
-
-            # Ensure the tool class inherits from BaseTool
-            if not issubclass(tool_class, BaseTool):
-                msg = f"Class '{class_name}' does not inherit from BaseTool."
-                if self.notebook:
-                    self.notebook.log("self_coding_engine", "TOOL_INHERITANCE_ERROR", msg, metadata={"plan": plan, "error": msg})
-                self.logger.error(msg)
-                return {"success": False, "error": msg}
-
-            tool_instance = tool_class()
-
-            if tool_manager:
-                tool_manager.register_tool(tool_instance)
-                success_msg = f"Tool '{class_name}' registered successfully in ToolManager."
-                if self.notebook:
-                    self.notebook.log("self_coding_engine", "TOOL_REGISTRATION_SUCCESS", success_msg, metadata={"class_name": class_name, "tool": tool_instance})
-                self.logger.info(success_msg)
-                return {"success": True, "error": "", "tool": tool_instance}
-            else:
-                info_msg = (
-                    f"Tool '{class_name}' instantiated, but no ToolManager provided.\n"
-                    f"To register manually: tool_manager.register_tool(tool_instance)"
-                )
-                if self.notebook:
-                    self.notebook.log("self_coding_engine", "TOOL_INSTANTIATED", info_msg, metadata={"class_name": class_name, "
+                    validator = self.validator_registry.get(
