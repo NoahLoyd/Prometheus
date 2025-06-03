@@ -3,7 +3,9 @@ import logging
 import re
 import sys
 import importlib.util
+import tempfile
 from typing import Optional, Dict, Any
+from core.utils.path_utils import safe_path_join
 
 logger = logging.getLogger("promethyn.validators")
 logging.basicConfig(level=logging.INFO)
@@ -61,8 +63,10 @@ class CodeQualityAssessor:
             try:
                 from pylint.lint import Run
                 # Save code to a temp file
-                import tempfile
                 with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as tf:
+                    # Get temp directory safely
+                    temp_dir = tempfile.gettempdir()
+                    safe_temp_path = safe_path_join(temp_dir, tf.name)
                     tf.write(code)
                     tf.flush()
                     results = Run([tf.name], do_exit=False)
@@ -73,8 +77,10 @@ class CodeQualityAssessor:
         elif self.flake8:
             try:
                 from flake8.main.application import Application
-                import tempfile
                 with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as tf:
+                    # Get temp directory safely
+                    temp_dir = tempfile.gettempdir()
+                    safe_temp_path = safe_path_join(temp_dir, tf.name)
                     tf.write(code)
                     tf.flush()
                     app = Application()
