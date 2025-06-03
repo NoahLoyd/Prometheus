@@ -1,9 +1,9 @@
 """
 Module: promethyn.test_tool_runner
 
-Elite, production-grade TestToolRunner for Promethyn’s self-coding system.
+Elite, production-grade TestToolRunner for Promethyn's self-coding system.
 
-This module defines the TestToolRunner class, responsible for dynamically importing and executing test files using either pytest or unittest, returning structured results. The runner is robust, extensible, and follows Promethyn’s engineering standards, ensuring any generated test file is validated before installation.
+This module defines the TestToolRunner class, responsible for dynamically importing and executing test files using either pytest or unittest, returning structured results. The runner is robust, extens[...]
 
 Author: Promethyn AI
 Python Version: 3.11+
@@ -16,6 +16,7 @@ import types
 import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
+from core.utils.path_utils import safe_path_join
 
 logger = logging.getLogger("promethyn.test_tool_runner")
 logger.setLevel(logging.INFO)
@@ -119,7 +120,12 @@ class TestToolRunner:
                 # Capture output for logging
                 output = io.StringIO()
                 loader = self.unittest.TestLoader()
-                suite = loader.discover(str(Path(abs_path).parent), pattern=Path(abs_path).name)
+                # Extract parent directory and filename for test discovery
+                test_dir = str(Path(abs_path).parent)
+                pattern = Path(abs_path).name
+                # Use safe_path_join for the parent directory
+                safe_test_dir = safe_path_join("", test_dir)
+                suite = loader.discover(safe_test_dir, pattern=pattern)
                 runner = self.unittest.TextTestRunner(stream=output, verbosity=2)
                 test_result = runner.run(suite)
                 result["passed"] = test_result.wasSuccessful()
