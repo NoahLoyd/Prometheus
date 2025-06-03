@@ -3,6 +3,7 @@ import re
 from typing import Dict, Any, List, Optional
 from validators.security_validator import validate_security
 from core.utils.path_utils import safe_path_join
+from addons.notebook import AddOnNotebook
 
 class ModuleBuilderTool:
     """
@@ -34,6 +35,10 @@ class ModuleBuilderTool:
     }
     VALID_MODULE_TYPES = ("tool", "test", "validator", "core")
 
+    def __init__(self, notebook: Optional[AddOnNotebook] = None):
+        """Initialize ModuleBuilderTool with optional notebook instance."""
+        self.notebook = notebook or AddOnNotebook()
+
     def write_module(self, plan: Dict[str, Any]) -> Dict[str, List[str]]:
         """
         Main entry: Writes modules and test files as specified in the build plan.
@@ -62,9 +67,10 @@ class ModuleBuilderTool:
 
         # --- Schema Validation and Logging ---
         if not (legacy_mode or enhanced_mode):
-            results["errors"].append(
-                "Plan must contain either 'file' and 'code', or a 'files' list of dicts with 'path' and 'code'."
-            )
+            error_msg = "Plan must contain either 'file' and 'code', or a 'files' list of dicts with 'path' and 'code'."
+            results["errors"].append(error_msg)
+            if self.notebook:
+                self.notebook.log("module_builder", "SCHEMA_ERROR", error_msg, metadata={"plan": plan})
             return results
 
         # --- Process Legacy Plan ---
@@ -81,7 +87,10 @@ class ModuleBuilderTool:
 
             # Check required fields
             if not file_path or not code:
-                results["errors"].append("Legacy plan missing required 'file' or 'code' fields.")
+                error_msg = "Legacy plan missing required 'file' or 'code' fields."
+                results["errors"].append(error_msg)
+                if self.notebook:
+                    self.notebook.log("module_builder", "PLAN_ERROR", error_msg, metadata={"plan": plan})
             else:
                 try:
                     self._safe_write_file(
@@ -91,7 +100,10 @@ class ModuleBuilderTool:
                         overwrite_allowed=overwrite_allowed
                     )
                 except Exception as e:
-                    results["errors"].append(f"Error writing {file_path}: {e}")
+                    error_msg = f"Error writing {file_path}: {e}"
+                    results["errors"].append(error_msg)
+                    if self.notebook:
+                        self.notebook.log("module_builder", "WRITE_ERROR", error_msg, metadata={"file_path": file_path, "error": str(e)})
 
                 # Test file (optional)
                 if test_code and test_file_path:
@@ -105,7 +117,10 @@ class ModuleBuilderTool:
                             overwrite_allowed=overwrite_allowed
                         )
                     except Exception as e:
-                        results["errors"].append(f"Error writing {test_file_path}: {e}")
+                        error_msg = f"Error writing {test_file_path}: {e}"
+                        results["errors"].append(error_msg)
+                        if self.notebook:
+                            self.notebook.log("module_builder", "TEST_WRITE_ERROR", error_msg, metadata={"test_file_path": test_file_path, "error": str(e)})
 
                 # Optionally generate placeholder test if test file is missing
                 if test_file_path and not os.path.exists(test_file_path):
@@ -118,7 +133,10 @@ class ModuleBuilderTool:
                             overwrite_allowed=overwrite_allowed
                         )
                     except Exception as e:
-                        results["errors"].append(f"Error writing placeholder {test_file_path}: {e}")
+                        error_msg = f"Error writing placeholder {test_file_path}: {e}"
+                        results["errors"].append(error_msg)
+                        if self.notebook:
+                            self.notebook.log("module_builder", "PLACEHOLDER_ERROR", error_msg, metadata={"test_file_path": test_file_path, "error": str(e)})
 
                 # Validators (legacy: only if type is validator)
                 if mod_type == "validator":
@@ -137,13 +155,19 @@ class ModuleBuilderTool:
             # Validate structure for each file entry
             for idx, entry in enumerate(files):
                 if not isinstance(entry, dict):
-                    results["errors"].append(f"File entry at index {idx} is not a dict: {entry}")
+                    error_msg = f"File entry at index {idx} is not a dict: {entry}"
+                    results["errors"].append(error_msg)
+                    if self.notebook:
+                        self.notebook.log("module_builder", "ENTRY_ERROR", error_msg, metadata={"index": idx, "entry": entry})
                     continue
                 path = entry.get("path")
                 code = entry.get("code")
                 mod_type = entry.get("type", None)
                 if not path or not code:
-                    results["errors"].append(f"File entry missing 'path' or 'code': {entry}")
+                    error_msg = f"File entry missing 'path' or 'code': {entry}"
+                    results["errors"].append(error_msg)
+                    if self.notebook:
+                        self.notebook.log("module_builder", "MISSING_FIELDS", error_msg, metadata={"index": idx, "entry": entry})
                     continue
                 mod_type = mod_type or self._infer_type_from_path(path)
                 routed_path = self._route_path(path, mod_type)
@@ -158,13 +182,18 @@ class ModuleBuilderTool:
                     # SECURITY VALIDATION INJECTION (after file written, before registration)
                     is_secure, sec_msg = validate_security(routed_path)
                     if not is_secure:
-                        self._addon_log(f"SECURITY VALIDATION FAIL on {routed_path}: {sec_msg}")
-                        results["errors"].append(f"Security validation failed for {routed_path}: {sec_msg}")
+                        error_msg = f"Security validation failed for {routed_path}: {sec_msg}"
+                        if self.notebook:
+                            self.notebook.log("module_builder", "SECURITY_VALIDATION_FAIL", error_msg, metadata={"file_path": routed_path, "message": sec_msg})
+                        results["errors"].append(error_msg)
                         results["skipped"].append(routed_path)
                         continue
                     written_paths.append(routed_path)
                 except Exception as e:
-                    results["errors"].append(f"Error writing {routed_path}: {e}")
+                    error_msg = f"Error writing {routed_path}: {e}"
+                    results["errors"].append(error_msg)
+                    if self.notebook:
+                        self.notebook.log("module_builder", "WRITE_ERROR", error_msg, metadata={"routed_path": routed_path, "error": str(e)})
 
             # --- Handle test files: "test_code" (single), "test_files" (list) ---
             if "test_code" in plan and isinstance(plan["test_code"], str):
@@ -178,17 +207,26 @@ class ModuleBuilderTool:
                         overwrite_allowed=overwrite_allowed
                     )
                 except Exception as e:
-                    results["errors"].append(f"Error writing {test_file_path}: {e}")
+                    error_msg = f"Error writing {test_file_path}: {e}"
+                    results["errors"].append(error_msg)
+                    if self.notebook:
+                        self.notebook.log("module_builder", "TEST_WRITE_ERROR", error_msg, metadata={"test_file_path": test_file_path, "error": str(e)})
 
             if "test_files" in plan and isinstance(plan["test_files"], list):
                 for idx, tfile in enumerate(plan["test_files"]):
                     if not isinstance(tfile, dict):
-                        results["errors"].append(f"Test file entry at index {idx} is not a dict: {tfile}")
+                        error_msg = f"Test file entry at index {idx} is not a dict: {tfile}"
+                        results["errors"].append(error_msg)
+                        if self.notebook:
+                            self.notebook.log("module_builder", "TEST_ENTRY_ERROR", error_msg, metadata={"index": idx, "tfile": tfile})
                         continue
                     tpath = tfile.get("path")
                     tcode = tfile.get("code")
                     if not tpath or not tcode:
-                        results["errors"].append(f"Test file missing 'path' or 'code': {tfile}")
+                        error_msg = f"Test file missing 'path' or 'code': {tfile}"
+                        results["errors"].append(error_msg)
+                        if self.notebook:
+                            self.notebook.log("module_builder", "TEST_MISSING_FIELDS", error_msg, metadata={"index": idx, "tfile": tfile})
                         continue
                     tpath = self._route_path(tpath, "test")
                     tcode = self._apply_type_header(tpath, tcode, "test")
@@ -200,7 +238,10 @@ class ModuleBuilderTool:
                             overwrite_allowed=overwrite_allowed
                         )
                     except Exception as e:
-                        results["errors"].append(f"Error writing {tpath}: {e}")
+                        error_msg = f"Error writing {tpath}: {e}"
+                        results["errors"].append(error_msg)
+                        if self.notebook:
+                            self.notebook.log("module_builder", "TEST_WRITE_ERROR", error_msg, metadata={"tpath": tpath, "error": str(e)})
 
             # --- Optionally generate placeholder test for each main file if missing ---
             for entry in files:
@@ -220,7 +261,10 @@ class ModuleBuilderTool:
                                 overwrite_allowed=overwrite_allowed
                             )
                         except Exception as e:
-                            results["errors"].append(f"Error writing placeholder {test_path}: {e}")
+                            error_msg = f"Error writing placeholder {test_path}: {e}"
+                            results["errors"].append(error_msg)
+                            if self.notebook:
+                                self.notebook.log("module_builder", "PLACEHOLDER_ERROR", error_msg, metadata={"test_path": test_path, "error": str(e)})
 
             # Validators
             valid = self._run_and_log_validators(written_paths, results)
@@ -252,10 +296,14 @@ class ModuleBuilderTool:
         os.makedirs(safe_dir, exist_ok=True)
         if os.path.exists(file_path) and not overwrite_allowed:
             results["skipped"].append(file_path)
+            if self.notebook:
+                self.notebook.log("module_builder", "FILE_SKIPPED", f"File exists, skipping: {file_path}", metadata={"file_path": file_path, "overwrite_allowed": overwrite_allowed})
             return
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(code)
         results["written"].append(file_path)
+        if self.notebook:
+            self.notebook.log("module_builder", "FILE_WRITTEN", f"Successfully wrote file: {file_path}", metadata={"file_path": file_path, "code_length": len(code)})
 
     def _apply_type_header(self, file_path: str, code: str, mod_type: Optional[str]) -> str:
         """
@@ -376,13 +424,29 @@ def test_placeholder():
             for v_name, v_func in validator_funcs.items():
                 try:
                     valid, msg = v_func(file_path)
-                    self._addon_log(f"VALIDATOR {v_name} on {file_path}: {'PASS' if valid else 'FAIL'} - {msg}")
+                    status = 'PASS' if valid else 'FAIL'
+                    log_msg = f"Validator {v_name} on {file_path}: {status} - {msg}"
+                    if self.notebook:
+                        self.notebook.log("module_builder", "VALIDATOR_RESULT", log_msg, metadata={
+                            "validator": v_name, 
+                            "file_path": file_path, 
+                            "valid": valid, 
+                            "message": msg,
+                            "status": status
+                        })
                     if not valid:
-                        results["errors"].append(f"Validator {v_name} failed on {file_path}: {msg}")
+                        error_msg = f"Validator {v_name} failed on {file_path}: {msg}"
+                        results["errors"].append(error_msg)
                         all_valid = False
                 except Exception as e:
-                    self._addon_log(f"VALIDATOR {v_name} on {file_path}: ERROR - {e}")
-                    results["errors"].append(f"Validator {v_name} error on {file_path}: {e}")
+                    error_msg = f"Validator {v_name} error on {file_path}: {e}"
+                    if self.notebook:
+                        self.notebook.log("module_builder", "VALIDATOR_ERROR", error_msg, metadata={
+                            "validator": v_name, 
+                            "file_path": file_path, 
+                            "error": str(e)
+                        })
+                    results["errors"].append(error_msg)
                     all_valid = False
         return all_valid
 
@@ -411,14 +475,3 @@ def test_placeholder():
                 except Exception:
                     continue
         return validators
-
-    def _addon_log(self, msg: str) -> None:
-        """
-        Log messages to AddOnNotebook (append to AddOnNotebook.log).
-
-        Args:
-            msg (str): The message.
-        """
-        log_path = "AddOnNotebook.log"
-        with open(log_path, "a", encoding="utf-8") as logf:
-            logf.write(msg.strip() + "\n")
