@@ -14,39 +14,45 @@ from tools.test_tool_runner import TestToolRunner  # <--- NEW IMPORT
 from core.validators.extended_validators import register_validators
 from core.sandbox_runner import SandboxRunner # <--- ADDED FOR SANDBOX INTEGRATION
 from core.utils.path_utils import safe_path_join
+from core.utils.validator_importer import import_validator
 
-# --- BEGIN: Fallback Validator Import System ---
-VALIDATOR_PATHS = ["validators", "core.validators"]
+# --- BEGIN: Updated Validator Import System ---
+def import_validator_fallback(name):
+    """
+    Fallback validator import function using the new import_validator utility.
+    Issues warning if validator cannot be imported.
+    """
+    validator_module = import_validator(name)
+    if validator_module is None:
+        logging.getLogger("Promethyn.SelfCodingEngine").warning(f"Validator '{name}' could not be imported and will be unavailable.")
+    return validator_module
+# --- END: Updated Validator Import System ---
 
-def import_validator(name):
-    import importlib
-    for base in VALIDATOR_PATHS:
-        try:
-            return importlib.import_module(f"{base}.{name}")
-        except ImportError:
-            continue
-    return None
-# --- END: Fallback Validator Import System ---
-
-# --- Begin: Imports for new validator modules ---
+# --- Begin: Imports for new validator modules using import_validator ---
 try:
-    from core.validators.code_quality_assessor import CodeQualityAssessor
-except ImportError:
+    code_quality_module = import_validator("code_quality_assessor")
+    CodeQualityAssessor = getattr(code_quality_module, "CodeQualityAssessor", None) if code_quality_module else None
+except Exception:
     CodeQualityAssessor = None
+
 try:
-    from core.validators.security_scanner import SecurityScanner
-except ImportError:
+    security_scanner_module = import_validator("security_scanner")
+    SecurityScanner = getattr(security_scanner_module, "SecurityScanner", None) if security_scanner_module else None
+except Exception:
     SecurityScanner = None
+
 try:
-    from core.validators.behavioral_simulator import BehavioralSimulator
-except ImportError:
+    behavioral_simulator_module = import_validator("behavioral_simulator")
+    BehavioralSimulator = getattr(behavioral_simulator_module, "BehavioralSimulator", None) if behavioral_simulator_module else None
+except Exception:
     BehavioralSimulator = None
 # --- End: Imports for new validator modules ---
 
-# --- Import Security Validator as required ---
+# --- Import Security Validator as required using import_validator ---
 try:
-    from validators.security_validator import validate_security
-except ImportError:
+    security_validator_module = import_validator("security_validator")
+    validate_security = getattr(security_validator_module, "validate_security", None) if security_validator_module else None
+except Exception:
     validate_security = None
 # --- End Security Validator import ---
 
