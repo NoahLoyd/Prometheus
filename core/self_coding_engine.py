@@ -578,13 +578,18 @@ class SelfCodingEngine:
                     results.append(single_result)
                     continue
 
-                # --- BEGIN: Unified Validation Pipeline ---
-                # Replace ALL individual validator executions with a single unified call
+                # --- BEGIN: Promethyn AGI Validation Pipeline using _run_validation_pipeline ---
                 validation_passed, detailed_validator_outputs = self._run_validation_pipeline(
                     plan, tool_code, test_code, tool_path, test_path
                 )
 
-                # Check validation results
+                # Extract TestToolRunner result for logging, if it ran and produced a result
+                final_test_run_log_entry = None
+                for entry in detailed_validator_outputs:
+                    if entry["validator"] == "TestToolRunner" and "result" in entry:
+                        final_test_run_log_entry = entry["result"]
+                        break
+                
                 if not validation_passed:
                     fail_msg = "Tool/module rejected due to failed validation or test during pipeline execution."
                     single_result["registration"] = {"success": False, "error": fail_msg}
@@ -602,20 +607,98 @@ class SelfCodingEngine:
                         self.notebook.log("tool_rejected", {
                             "plan": plan,
                             "validator_results": detailed_validator_outputs, 
+                            "test_run_result": final_test_run_log_entry, 
                             "error": fail_msg,
                             "detailed_errors": specific_errors
                         })
                     results.append(single_result)
-                    self.logger.warning("Validation failed, aborting tool registration.")
                     continue
                 else:
                     if self.notebook:
                         self.notebook.log("tool_validated", { 
                             "plan": plan,
                             "validator_results": detailed_validator_outputs,
+                            "test_run_result": final_test_run_log_entry,
                             "status": "success"
                         })
-                # --- END: Unified Validation Pipeline ---
+                # --- END: Promethyn AGI Validation Pipeline ---
+
+                # --- Validator hooks (future extensibility) ---
+                # This section remains as per instruction to preserve all old logic.
+                # It might run some validators that were already part of _run_validation_pipeline.
+                validators_passed_secondary_check = True # Renamed to avoid conflict
+                for validator_name in self.VALIDATORS: # self.VALIDATORS can be different from the pipeline sequence
+                    validator = self.validator_registry.get(validator_name)
+                    if validator:
+                        # Avoid re-running TestToolRunner if it was just done and part of self.VALIDATORS
+                        # However, self.VALIDATORS doesn't typically include "TestToolRunner" by name.
+                        # The primary TestToolRunner execution is now within _run_validation_pipeline.
+                        try:
+                            # SecurityValidator expects tool_path, others (plan, tool_code, test_code)
+                            if validator_name == "SecurityValidator":
+                                if tool_path and callable(validator):
+                                    validator_result = validator(tool_path)
+                                else: # Skip if no tool_path or validator misconfigured
+                                    validator_result = {"success": True, "info": f"Secondary check for {validator_name} skipped."}
+                            else:
+                                validator_result = validator(plan, tool_code, test_code)
+
+                            if not validator_result.get("success", True):
+                                val_msg = f"Secondary validator hook {validator_name} failed: {validator_result.get('error')}"
+                                single_result["registration"] = {"success": False, "error": val_msg}
+                                retry_later.append({"plan": plan, "reason": val_msg})
+                                if self.notebook:
+                                    self.notebook.log("secondary_validator_failure", { # Distinct log key
+                                        "plan": plan,
+                                        "validator": validator_name,
+                                        "error": val_msg,
+                                    })
+                                self.logger.error(val_msg)
+                                results.append(single_result)
+                                validators_passed_secondary_check = False
+                                break 
+                        except Exception as val_ex:
+                            tb = traceback.format_exc()
+                            val_msg = f"Secondary validator hook {validator_name} raised: {val_ex}\n{tb}"
+                            single_result["registration"] = {"success": False, "error": val_msg}
+                            retry_later.append({"plan": plan, "reason": val_msg})
+                            if self.notebook:
+                                self.notebook.log("secondary_validator_exception", { # Distinct log key
+                                    "plan": plan,
+                                    "validator": validator_name,
+                                    "error": val_msg,
+                                })
+                            self.logger.error(val_msg)
+                            results.append(single_result)
+                            validators_passed_secondary_check = False
+                            break
+
+                if not validators_passed_secondary_check:
+                    continue
+
+                # --- Final test: TestToolRunner on generated test file ---
+                # This section also remains. It's a specific call to TestToolRunner.
+                # The _run_validation_pipeline also includes a TestToolRunner step.
+                # This could be redundant if test_path is always present, but preserved for now.
+                if test_path: # Ensure test_path exists before calling
+                    # Check if TestToolRunner already ran successfully in the main pipeline
+                    # to avoid redundant execution if not desired.
+                    # For now, preserving original logic means it *may* run again.
+                    test_result_secondary = self.test_runner.run_test_file(test_path) # Renamed to avoid conflict
+                    if not test_result_secondary.get("passed", False):
+                        fail_msg = f"Final TestToolRunner check failed: {test_result_secondary.get('error', test_result_secondary)}"
+                        single_result["registration"] = {"success": False, "error": fail_msg}
+                        retry_later.append({"plan": plan, "reason": fail_msg})
+                        if self.notebook:
+                            self.notebook.log("final_test_tool_runner_failure", { # Distinct log key
+                                "plan": plan,
+                                "test_result": test_result_secondary,
+                                "error": fail_msg,
+                            })
+                            self._log_to_notebook() # Original call
+                        self.logger.error(fail_msg)
+                        results.append(single_result)
+                        continue
                 
                 # --- BEGIN SANDBOX INTEGRATION ---
                 # After the tool is generated and all previous validators pass, run in sandbox.
@@ -685,6 +768,38 @@ class SelfCodingEngine:
                 # If sandbox_run_successful is False due to an actual failure (handled by 'continue' above), 
                 # subsequent steps including registration will be skipped.
                 # --- END SANDBOX INTEGRATION ---
+
+                # --- AGI EXTENSION: Enhanced Validator Audit Logging ---\
+                # This audit log remains, it iterates self.VALIDATORS.
+                for validator_name in self.VALIDATORS:
+                    validator = self.validator_registry.get(validator_name)
+                    if validator:
+                        try:
+                            # Handle SecurityValidator signature
+                            if validator_name == "SecurityValidator":
+                                if tool_path and callable(validator):
+                                    validator_result = validator(tool_path)
+                                else:
+                                    validator_result = {"success": True, "info": f"Audit for {validator_name} skipped."}
+                            else:
+                                validator_result = validator(plan, tool_code, test_code)
+                            audit_log = {
+                                "plan": plan,
+                                "validator": validator_name,
+                                "result": validator_result,
+                            }
+                            if self.notebook:
+                                self.notebook.log("validator_audit", audit_log)
+                            self.logger.debug(f"Validator '{validator_name}' audit outcome: {validator_result}")
+                        except Exception as val_ex:
+                            audit_log = {
+                                "plan": plan,
+                                "validator": validator_name,
+                                "exception": str(val_ex),
+                            }
+                            if self.notebook:
+                                self.notebook.log("validator_audit_exception", audit_log)
+                            self.logger.debug(f"Validator '{validator_name}' exception during audit: {val_ex}")
 
                 # --- Dynamic import of tool module and class ---\
                 module_path = tool_path[:-3].replace("/", ".").replace("\\\\", ".") if tool_path and tool_path.endswith(".py") else (tool_path.replace("/", ".").replace("\\\\", ".") if tool_path else "")
@@ -803,9 +918,8 @@ class SelfCodingEngine:
             class_name = plan.get("class")
             if not file_path or not class_name:
                 msg = "Missing 'file' or 'class' in plan for tool registration."
-                print(f"[Tool Registration] {msg}")
                 if self.notebook:
-                    self.notebook.log("tool_registration_failure", {"plan": plan, "error": msg})
+                    self.notebook.log("self_coding_engine", "TOOL_REGISTRATION_ERROR", msg, metadata={"plan": plan, "error": msg})
                 self.logger.error(msg)
                 return {"success": False, "error": msg}
 
@@ -822,27 +936,24 @@ class SelfCodingEngine:
             except Exception as imp_exc:
                 tb_imp = traceback.format_exc()
                 msg = f"Failed to import module '{module_path}': {imp_exc}\n{tb_imp}"
-                print(f"[Tool Registration] {msg}")
                 if self.notebook:
-                    self.notebook.log("tool_registration_failure", {"plan": plan, "error": msg, "module_path": module_path})
+                    self.notebook.log("self_coding_engine", "TOOL_IMPORT_ERROR", msg, metadata={"plan": plan, "error": msg, "module_path": module_path})
                 self.logger.error(msg)
                 return {"success": False, "error": msg}
 
             tool_class = getattr(module, class_name, None)
             if tool_class is None:
                 msg = f"Class '{class_name}' not found in module '{module_path}'."
-                print(f"[Tool Registration] {msg}")
                 if self.notebook:
-                    self.notebook.log("tool_registration_failure", {"plan": plan, "error": msg, "module_path": module_path, "class_name": class_name})
+                    self.notebook.log("self_coding_engine", "TOOL_CLASS_ERROR", msg, metadata={"plan": plan, "error": msg, "module_path": module_path, "class_name": class_name})
                 self.logger.error(msg)
                 return {"success": False, "error": msg}
 
             # Ensure the tool class inherits from BaseTool
             if not issubclass(tool_class, BaseTool):
                 msg = f"Class '{class_name}' does not inherit from BaseTool."
-                print(f"[Tool Registration] {msg}")
                 if self.notebook:
-                    self.notebook.log("tool_registration_failure", {"plan": plan, "error": msg})
+                    self.notebook.log("self_coding_engine", "TOOL_INHERITANCE_ERROR", msg, metadata={"plan": plan, "error": msg})
                 self.logger.error(msg)
                 return {"success": False, "error": msg}
 
@@ -851,7 +962,8 @@ class SelfCodingEngine:
             if tool_manager:
                 tool_manager.register_tool(tool_instance)
                 success_msg = f"Tool '{class_name}' registered successfully in ToolManager."
-                print(f"[Tool Registration] {success_msg}")
+                if self.notebook:
+                    self.notebook.log("self_coding_engine", "TOOL_REGISTRATION_SUCCESS", success_msg, metadata={"class_name": class_name, "tool": tool_instance})
                 self.logger.info(success_msg)
                 return {"success": True, "error": "", "tool": tool_instance}
             else:
@@ -859,16 +971,16 @@ class SelfCodingEngine:
                     f"Tool '{class_name}' instantiated, but no ToolManager provided.\n"
                     f"To register manually: tool_manager.register_tool(tool_instance)"
                 )
-                print(f"[Tool Registration] {info_msg}")
+                if self.notebook:
+                    self.notebook.log("self_coding_engine", "TOOL_INSTANTIATED", info_msg, metadata={"class_name": class_name, "tool": tool_instance})
                 self.logger.info(info_msg)
                 return {"success": True, "warning": info_msg, "tool": tool_instance}
 
         except Exception as e:
             tb = traceback.format_exc()
             err_msg = f"Tool registration exception for plan {plan.get('name', 'N/A')}: {e}\n{tb}"
-            print(f"[Tool Registration] Exception: {err_msg}")
             if self.notebook:
-                self.notebook.log("tool_registration_failure", {"plan": plan, "error": str(e), "traceback": tb})
+                self.notebook.log("self_coding_engine", "TOOL_REGISTRATION_EXCEPTION", err_msg, metadata={"plan": plan, "error": str(e), "traceback": tb})
             self.logger.error(err_msg)
             return {"success": False, "error": str(e), "traceback": tb}
 
@@ -1031,7 +1143,7 @@ class PlanVerifier:
 # Test-mode only validator check (delete after confirming)
 if __name__ == "__main__":
     # This is a basic test stub, needs more elaborate setup for full testing
-    print("SelfCodingEngine module loaded. Constructing instance for basic check...")
+    msg = "SelfCodingEngine module loaded. Constructing instance for basic check..."
     
     # Mock notebook for testing
     class MockNotebook:
@@ -1043,6 +1155,12 @@ if __name__ == "__main__":
 
     mock_notebook_instance = MockNotebook()
     engine = SelfCodingEngine(notebook=mock_notebook_instance)
+    
+    # Log initialization to notebook
+    if mock_notebook_instance:
+        mock_notebook_instance.log("self_coding_engine", {"message": msg, "registered_validators": list(engine.validator_registry.keys()), "validators_list": engine.VALIDATORS})
+    
+    print(msg)
     print("Registered validators:", list(engine.validator_registry.keys()))
     print("VALIDATORS list:", engine.VALIDATORS)
 
