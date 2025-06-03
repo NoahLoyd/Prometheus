@@ -421,51 +421,131 @@ class SelfCodingEngine:
         self.validator_registry[name] = instance
         self.logger.info(f"Validator '{name}' registered successfully.")
 
-    def _run_validation_pipeline(self, plan: Dict[str, Any], tool_code: str, test_code: str, tool_path: Optional[str], test_path: Optional[str]) -> Tuple[bool, List[Dict[str, Any]]]:
+    def _run_validation_pipeline(self, plan: Dict[str, Any], tool_code: str, test_code: str, tool_path: Optional[str] = None, test_path: Optional[str] = None) -> Tuple[bool, List[Dict[str, Any]]]:
         """
-        Runs validation pipeline using ValidationChain.
-        Uses self.validator_registry for validators, executed through ValidationChain.
-        Logs individual validator failures/exceptions to self.notebook.
-        Returns:
-            - bool: Overall validation success.
-            - List[Dict[str, Any]]: A list of dictionaries, each containing 'validator' name and 'result'.
+        Unified validation pipeline that eliminates duplicate validator executions.
+        Defines the correct validator execution order and ensures each validator runs only once.
+        
+        Execution Order: ["PlanVerifier", "MathEvaluator", "CodeQualityAssessor", "SecurityValidator", "TestToolRunner"]
+        
+        :param plan: The plan dictionary containing tool specifications
+        :param tool_code: The generated tool code
+        :param test_code: The generated test code
+        :param tool_path: Optional path to the tool file
+        :param test_path: Optional path to the test file
+        :return: Tuple of (overall_success, detailed_results)
         """
-        # Prepare context for validators
-        context = {
-            "plan": plan,
-            "tool_code": tool_code,
-            "test_code": test_code,
-            "tool_path": tool_path,
-            "test_path": test_path
-        }
+        # Define the correct validator execution order
+        validator_execution_order = ["PlanVerifier", "MathEvaluator", "CodeQualityAssessor", "SecurityValidator", "TestToolRunner"]
         
-        # Run validation chain
-        overall_success, detailed_results = self.validation_chain.run(context)
+        results = []
+        overall_success = True
         
-        # Log results to notebook
-        for result_entry in detailed_results:
-            validator_name = result_entry["validator"]
-            result = result_entry["result"]
+        self.logger.info(f"Starting unified validation pipeline for plan: {plan.get('name', 'N/A')}")
+        
+        for validator_name in validator_execution_order:
+            # Look up validator from registry
+            validator = self.validator_registry.get(validator_name)
             
-            if not result.get("success", True):
-                if self.notebook:
-                    self.notebook.log("validator_failure", {
-                        "plan": plan,
-                        "validator": validator_name,
-                        "error": result.get("error", "Unknown validation error")
-                    })
-                self.logger.warning(f"Validator '{validator_name}' failed for plan: {plan.get('name', 'N/A')}. Error: {result.get('error')}")
+            if validator is None:
+                # Special case for TestToolRunner which might be stored separately
+                if validator_name == "TestToolRunner" and hasattr(self, 'test_runner'):
+                    validator = self.test_runner
+                else:
+                    self.logger.warning(f"Validator '{validator_name}' not found in registry, skipping.")
+                    continue
             
-            if result.get("exception"):
+            try:
+                self.logger.debug(f"Running validator '{validator_name}' in unified pipeline")
+                
+                # Handle different validator signatures
+                if validator_name == "SecurityValidator":
+                    if tool_path and callable(validator):
+                        raw_result = validator(tool_path)
+                    elif not tool_path:
+                        raw_result = {"success": True, "info": f"{validator_name} skipped: tool_path not available."}
+                    else:
+                        raw_result = {"success": False, "error": f"{validator_name} is not configured correctly."}
+                        
+                elif validator_name == "TestToolRunner":
+                    # Special handling for TestToolRunner
+                    if test_path and hasattr(validator, 'run_test_file'):
+                        raw_result = validator.run_test_file(test_path)
+                    else:
+                        raw_result = {"passed": True, "success": True, "info": "TestToolRunner skipped: no test_path"}
+                        
+                else:
+                    # Standard validator signature (plan, tool_code, test_code)
+                    raw_result = validator(plan, tool_code, test_code)
+                
+                # Normalize result format
+                if isinstance(raw_result, dict):
+                    success = raw_result.get("success", raw_result.get("passed", True))
+                    error = raw_result.get("error")
+                    info = raw_result.get("info")
+                else:
+                    success = False
+                    error = f"Invalid result type from {validator_name}: {type(raw_result)}"
+                    info = None
+                
+                # Store result
+                result_entry = {
+                    "validator": validator_name,
+                    "result": {
+                        "success": success,
+                        "error": error,
+                        "info": info,
+                        "passed": raw_result.get("passed") if isinstance(raw_result, dict) else None
+                    }
+                }
+                results.append(result_entry)
+                
+                # Log result to notebook
+                if not success:
+                    if self.notebook:
+                        self.notebook.log("validator_failure", {
+                            "plan": plan,
+                            "validator": validator_name,
+                            "error": error or "Unknown validation error"
+                        })
+                    self.logger.warning(f"Validator '{validator_name}' failed for plan: {plan.get('name', 'N/A')}. Error: {error}")
+                    overall_success = False
+                    # Stop on first failure to prevent cascading issues
+                    break
+                else:
+                    self.logger.debug(f"Validator '{validator_name}' passed")
+                    
+            except Exception as e:
+                overall_success = False
+                tb_str = traceback.format_exc()
+                error_msg = f"Exception in validator '{validator_name}': {str(e)}"
+                
+                # Store exception result
+                result_entry = {
+                    "validator": validator_name,
+                    "result": {
+                        "success": False,
+                        "error": error_msg,
+                        "exception": tb_str
+                    }
+                }
+                results.append(result_entry)
+                
+                # Log exception to notebook
                 if self.notebook:
                     self.notebook.log("validator_exception", {
                         "plan": plan,
                         "validator": validator_name,
-                        "exception": result.get("error"),
-                        "traceback": result.get("exception")
+                        "exception": error_msg,
+                        "traceback": tb_str
                     })
+                
+                self.logger.error(f"Exception in validator '{validator_name}': {str(e)}\n{tb_str}")
+                # Stop on exception to prevent further issues
+                break
         
-        return overall_success, detailed_results
+        self.logger.info(f"Unified validation pipeline completed. Overall success: {overall_success}")
+        return overall_success, results
 
     def process_prompt(
         self,
@@ -578,7 +658,7 @@ class SelfCodingEngine:
                     results.append(single_result)
                     continue
 
-                # --- BEGIN: Promethyn AGI Validation Pipeline using _run_validation_pipeline ---
+                # --- BEGIN: Unified Promethyn AGI Validation Pipeline ---
                 validation_passed, detailed_validator_outputs = self._run_validation_pipeline(
                     plan, tool_code, test_code, tool_path, test_path
                 )
@@ -621,84 +701,78 @@ class SelfCodingEngine:
                             "test_run_result": final_test_run_log_entry,
                             "status": "success"
                         })
-                # --- END: Promethyn AGI Validation Pipeline ---
+                # --- END: Unified Promethyn AGI Validation Pipeline ---
 
-                # --- Validator hooks (future extensibility) ---
-                # This section remains as per instruction to preserve all old logic.
-                # It might run some validators that were already part of _run_validation_pipeline.
-                validators_passed_secondary_check = True # Renamed to avoid conflict
-                for validator_name in self.VALIDATORS: # self.VALIDATORS can be different from the pipeline sequence
-                    validator = self.validator_registry.get(validator_name)
-                    if validator:
-                        # Avoid re-running TestToolRunner if it was just done and part of self.VALIDATORS
-                        # However, self.VALIDATORS doesn't typically include "TestToolRunner" by name.
-                        # The primary TestToolRunner execution is now within _run_validation_pipeline.
-                        try:
-                            # SecurityValidator expects tool_path, others (plan, tool_code, test_code)
-                            if validator_name == "SecurityValidator":
-                                if tool_path and callable(validator):
-                                    validator_result = validator(tool_path)
-                                else: # Skip if no tool_path or validator misconfigured
-                                    validator_result = {"success": True, "info": f"Secondary check for {validator_name} skipped."}
-                            else:
-                                validator_result = validator(plan, tool_code, test_code)
+                # --- COMMENTED OUT: Redundant Validator hooks (future extensibility) ---
+                # The following section was causing duplicate validator executions and has been commented out
+                # to prevent redundant validation. The unified pipeline above handles all validation.
+                #
+                # validators_passed_secondary_check = True 
+                # for validator_name in self.VALIDATORS: 
+                #     validator = self.validator_registry.get(validator_name)
+                #     if validator:
+                #         try:
+                #             if validator_name == "SecurityValidator":
+                #                 if tool_path and callable(validator):
+                #                     validator_result = validator(tool_path)
+                #                 else:
+                #                     validator_result = {"success": True, "info": f"Secondary check for {validator_name} skipped."}
+                #             else:
+                #                 validator_result = validator(plan, tool_code, test_code)
+                #
+                #             if not validator_result.get("success", True):
+                #                 val_msg = f"Secondary validator hook {validator_name} failed: {validator_result.get('error')}"
+                #                 single_result["registration"] = {"success": False, "error": val_msg}
+                #                 retry_later.append({"plan": plan, "reason": val_msg})
+                #                 if self.notebook:
+                #                     self.notebook.log("secondary_validator_failure", {
+                #                         "plan": plan,
+                #                         "validator": validator_name,
+                #                         "error": val_msg,
+                #                     })
+                #                 self.logger.error(val_msg)
+                #                 results.append(single_result)
+                #                 validators_passed_secondary_check = False
+                #                 break 
+                #         except Exception as val_ex:
+                #             tb = traceback.format_exc()
+                #             val_msg = f"Secondary validator hook {validator_name} raised: {val_ex}\n{tb}"
+                #             single_result["registration"] = {"success": False, "error": val_msg}
+                #             retry_later.append({"plan": plan, "reason": val_msg})
+                #             if self.notebook:
+                #                 self.notebook.log("secondary_validator_exception", {
+                #                     "plan": plan,
+                #                     "validator": validator_name,
+                #                     "error": val_msg,
+                #                 })
+                #             self.logger.error(val_msg)
+                #             results.append(single_result)
+                #             validators_passed_secondary_check = False
+                #             break
+                #
+                # if not validators_passed_secondary_check:
+                #     continue
 
-                            if not validator_result.get("success", True):
-                                val_msg = f"Secondary validator hook {validator_name} failed: {validator_result.get('error')}"
-                                single_result["registration"] = {"success": False, "error": val_msg}
-                                retry_later.append({"plan": plan, "reason": val_msg})
-                                if self.notebook:
-                                    self.notebook.log("secondary_validator_failure", { # Distinct log key
-                                        "plan": plan,
-                                        "validator": validator_name,
-                                        "error": val_msg,
-                                    })
-                                self.logger.error(val_msg)
-                                results.append(single_result)
-                                validators_passed_secondary_check = False
-                                break 
-                        except Exception as val_ex:
-                            tb = traceback.format_exc()
-                            val_msg = f"Secondary validator hook {validator_name} raised: {val_ex}\n{tb}"
-                            single_result["registration"] = {"success": False, "error": val_msg}
-                            retry_later.append({"plan": plan, "reason": val_msg})
-                            if self.notebook:
-                                self.notebook.log("secondary_validator_exception", { # Distinct log key
-                                    "plan": plan,
-                                    "validator": validator_name,
-                                    "error": val_msg,
-                                })
-                            self.logger.error(val_msg)
-                            results.append(single_result)
-                            validators_passed_secondary_check = False
-                            break
-
-                if not validators_passed_secondary_check:
-                    continue
-
-                # --- Final test: TestToolRunner on generated test file ---
-                # This section also remains. It's a specific call to TestToolRunner.
-                # The _run_validation_pipeline also includes a TestToolRunner step.
-                # This could be redundant if test_path is always present, but preserved for now.
-                if test_path: # Ensure test_path exists before calling
-                    # Check if TestToolRunner already ran successfully in the main pipeline
-                    # to avoid redundant execution if not desired.
-                    # For now, preserving original logic means it *may* run again.
-                    test_result_secondary = self.test_runner.run_test_file(test_path) # Renamed to avoid conflict
-                    if not test_result_secondary.get("passed", False):
-                        fail_msg = f"Final TestToolRunner check failed: {test_result_secondary.get('error', test_result_secondary)}"
-                        single_result["registration"] = {"success": False, "error": fail_msg}
-                        retry_later.append({"plan": plan, "reason": fail_msg})
-                        if self.notebook:
-                            self.notebook.log("final_test_tool_runner_failure", { # Distinct log key
-                                "plan": plan,
-                                "test_result": test_result_secondary,
-                                "error": fail_msg,
-                            })
-                            self._log_to_notebook() # Original call
-                        self.logger.error(fail_msg)
-                        results.append(single_result)
-                        continue
+                # --- COMMENTED OUT: Redundant Final test: TestToolRunner ---
+                # This section was causing duplicate TestToolRunner executions and has been commented out
+                # because TestToolRunner is now handled in the unified validation pipeline above.
+                #
+                # if test_path:
+                #     test_result_secondary = self.test_runner.run_test_file(test_path)
+                #     if not test_result_secondary.get("passed", False):
+                #         fail_msg = f"Final TestToolRunner check failed: {test_result_secondary.get('error', test_result_secondary)}"
+                #         single_result["registration"] = {"success": False, "error": fail_msg}
+                #         retry_later.append({"plan": plan, "reason": fail_msg})
+                #         if self.notebook:
+                #             self.notebook.log("final_test_tool_runner_failure", {
+                #                 "plan": plan,
+                #                 "test_result": test_result_secondary,
+                #                 "error": fail_msg,
+                #             })
+                #             self._log_to_notebook()
+                #         self.logger.error(fail_msg)
+                #         results.append(single_result)
+                #         continue
                 
                 # --- BEGIN SANDBOX INTEGRATION ---
                 # After the tool is generated and all previous validators pass, run in sandbox.
@@ -769,40 +843,41 @@ class SelfCodingEngine:
                 # subsequent steps including registration will be skipped.
                 # --- END SANDBOX INTEGRATION ---
 
-                # --- AGI EXTENSION: Enhanced Validator Audit Logging ---\
-                # This audit log remains, it iterates self.VALIDATORS.
-                for validator_name in self.VALIDATORS:
-                    validator = self.validator_registry.get(validator_name)
-                    if validator:
-                        try:
-                            # Handle SecurityValidator signature
-                            if validator_name == "SecurityValidator":
-                                if tool_path and callable(validator):
-                                    validator_result = validator(tool_path)
-                                else:
-                                    validator_result = {"success": True, "info": f"Audit for {validator_name} skipped."}
-                            else:
-                                validator_result = validator(plan, tool_code, test_code)
-                            audit_log = {
-                                "plan": plan,
-                                "validator": validator_name,
-                                "result": validator_result,
-                            }
-                            if self.notebook:
-                                self.notebook.log("validator_audit", audit_log)
-                            self.logger.debug(f"Validator '{validator_name}' audit outcome: {validator_result}")
-                        except Exception as val_ex:
-                            audit_log = {
-                                "plan": plan,
-                                "validator": validator_name,
-                                "exception": str(val_ex),
-                            }
-                            if self.notebook:
-                                self.notebook.log("validator_audit_exception", audit_log)
-                            self.logger.debug(f"Validator '{validator_name}' exception during audit: {val_ex}")
+                # --- COMMENTED OUT: AGI EXTENSION: Enhanced Validator Audit Logging ---
+                # This audit logging section has been commented out to prevent duplicate validator executions.
+                # All validator results are now logged through the unified pipeline above.
+                #
+                # for validator_name in self.VALIDATORS:
+                #     validator = self.validator_registry.get(validator_name)
+                #     if validator:
+                #         try:
+                #             if validator_name == "SecurityValidator":
+                #                 if tool_path and callable(validator):
+                #                     validator_result = validator(tool_path)
+                #                 else:
+                #                     validator_result = {"success": True, "info": f"Audit for {validator_name} skipped."}
+                #             else:
+                #                 validator_result = validator(plan, tool_code, test_code)
+                #             audit_log = {
+                #                 "plan": plan,
+                #                 "validator": validator_name,
+                #                 "result": validator_result,
+                #             }
+                #             if self.notebook:
+                #                 self.notebook.log("validator_audit", audit_log)
+                #             self.logger.debug(f"Validator '{validator_name}' audit outcome: {validator_result}")
+                #         except Exception as val_ex:
+                #             audit_log = {
+                #                 "plan": plan,
+                #                 "validator": validator_name,
+                #                 "exception": str(val_ex),
+                #             }
+                #             if self.notebook:
+                #                 self.notebook.log("validator_audit_exception", audit_log)
+                #             self.logger.debug(f"Validator '{validator_name}' exception during audit: {val_ex}")
 
                 # --- Dynamic import of tool module and class ---\
-                module_path = tool_path[:-3].replace("/", ".").replace("\\\\", ".") if tool_path and tool_path.endswith(".py") else (tool_path.replace("/", ".").replace("\\\\", ".") if tool_path else [...]
+                module_path = tool_path[:-3].replace("/", ".").replace("\\\\", ".") if tool_path and tool_path.endswith(".py") else (tool_path.replace("/", ".").replace("\\\\", ".") if tool_path else "")
                 if not module_path:
                     raise ValueError(f"Cannot determine module path from tool_path: {tool_path}")
 
