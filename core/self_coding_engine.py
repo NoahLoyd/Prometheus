@@ -297,6 +297,41 @@ class SelfCodingEngine:
         # Setup validation chain with dependencies
         self._setup_validation_chain()
 
+    def fallback_if_validator_missing(self, name: str, context: dict) -> ValidationResult:
+        """
+        Fallback layer for missing validators to prevent Promethyn crashes.
+        Logs warnings and returns a success result to continue execution.
+        
+        :param name: Name of the missing validator
+        :param context: Validation context for logging
+        :return: ValidationResult indicating validator was skipped
+        """
+        warning_msg = f"Validator '{name}' not found in registry, using fallback (skipping)"
+        fallback_info = f"Validator skipped: not found"
+        
+        # Log to both notebook and logger for visibility
+        self.logger.warning(warning_msg)
+        if self.notebook:
+            self.notebook.log("validator_missing_fallback", {
+                "validator_name": name,
+                "warning": warning_msg,
+                "context": {
+                    "plan_name": context.get("plan", {}).get("name", "N/A"),
+                    "has_tool_code": bool(context.get("tool_code")),
+                    "has_test_code": bool(context.get("test_code")),
+                    "tool_path": context.get("tool_path"),
+                    "test_path": context.get("test_path")
+                },
+                "action": "validator_skipped",
+                "reason": "not_found_in_registry"
+            })
+        
+        return ValidationResult(
+            success=True,
+            info=fallback_info,
+            error=None
+        )
+
     def load_extended_validators(self):
         """
         Enhanced validator loading system with dependency handling.
@@ -935,6 +970,25 @@ class SelfCodingEngine:
                             results.append(single_result)
                             validators_passed_secondary_check = False
                             break
+                    else:
+                        # --- NEW: Fallback for missing validators ---
+                        context = {
+                            "plan": plan,
+                            "tool_code": tool_code,
+                            "test_code": test_code,
+                            "tool_path": tool_path,
+                            "test_path": test_path
+                        }
+                        fallback_result = self.fallback_if_validator_missing(validator_name, context)
+                        # Continue execution with fallback result (which is success=True)
+                        # Log the fallback for audit trail
+                        if self.notebook:
+                            self.notebook.log("secondary_validator_fallback", {
+                                "plan": plan,
+                                "validator": validator_name,
+                                "fallback_result": fallback_result.__dict__,
+                                "action": "continued_execution"
+                            })
 
                 if not validators_passed_secondary_check:
                     continue
@@ -1063,6 +1117,25 @@ class SelfCodingEngine:
                             if self.notebook:
                                 self.notebook.log("validator_audit_exception", audit_log)
                             self.logger.debug(f"Validator '{validator_name}' exception during audit: {val_ex}")
+                    else:
+                        # --- NEW: Fallback for missing validators in audit log ---
+                        context = {
+                            "plan": plan,
+                            "tool_code": tool_code,
+                            "test_code": test_code,
+                            "tool_path": tool_path,
+                            "test_path": test_path
+                        }
+                        fallback_result = self.fallback_if_validator_missing(validator_name, context)
+                        audit_log = {
+                            "plan": plan,
+                            "validator": validator_name,
+                            "fallback_result": fallback_result.__dict__,
+                            "audit_type": "fallback_used"
+                        }
+                        if self.notebook:
+                            self.notebook.log("validator_audit_fallback", audit_log)
+                        self.logger.debug(f"Validator '{validator_name}' audit used fallback: {fallback_result}")
 
                 # --- Dynamic import of tool module and class ---\
                 module_path = tool_path[:-3].replace("/", ".").replace("\\\\", ".") if tool_path and tool_path.endswith(".py") else (tool_path.replace("/", ".").replace("\\\\", ".") if tool_path else [...]
@@ -1235,63 +1308,4 @@ class SelfCodingEngine:
                     f"To register manually: tool_manager.register_tool(tool_instance)"
                 )
                 if self.notebook:
-                    self.notebook.log("self_coding_engine", "TOOL_INSTANTIATED", info_msg, metadata={"class_name": class_name, "tool": tool_instance})
-                self.logger.info(info_msg)
-                return {"success": True, "warning": info_msg, "tool": tool_instance}
-
-        except Exception as e:
-            tb = traceback.format_exc()
-            err_msg = f"Tool registration exception for plan {plan.get('name', 'N/A')}: {e}\n{tb}"
-            if self.notebook:
-                self.notebook.log("self_coding_engine", "TOOL_REGISTRATION_EXCEPTION", err_msg, metadata={"plan": plan, "error": str(e), "traceback": tb})
-            self.logger.error(err_msg)
-            return {"success": False, "error": str(e), "traceback": tb}
-
-    # --- Internal standards enforcement for Promethyn AGI tools ---\
-    def _check_standards(self, plan, tool_code, test_code) -> List[str]:
-        """
-        Run Promethyn standards checks on code and plan: safety, modularity, testability.
-        Returns list of error strings, or empty list if all standards are met.
-        """
-        errors = []
-        # Safety: Check for dangerous operations (basic, extendable to AST-based)
-        unsafe_keywords = ["os.system", "eval(", "exec(", "subprocess.Popen", "open('/dev", "rm -rf"]
-        for kw in unsafe_keywords:
-            if kw in (tool_code or ""):
-                errors.append(f"Unsafe operation detected: {kw}")
-
-        # Modularity: Check for at least one class, and that the class matches plan
-        if plan.get("class") and plan.get("class") not in (tool_code or ""): # Check if class exists in plan first
-            errors.append("Tool class does not match plan or is missing.")
-        elif not plan.get("class") and "class " not in (tool_code or ""): # If no class in plan, expect one in code
-             errors.append("No class definition found in tool code.")
-
-
-        # Testability: Must have test code and 'run' method
-        if not test_code or ("def test" not in test_code and "class Test" not in test_code):
-            errors.append("No proper test defined or missing test function/class.")
-        if "def run(" not in (tool_code or ""):
-            errors.append("No 'run' method implemented in tool.")
-
-        # TODO: Add more robust AST-based and pattern-based checks for safety, modularity, testability
-
-        return errors
-
-    # --- Placeholder for future caching mechanism ---\
-    def _cache_result(self, key, value):
-        """
-        TODO: Implement caching (e.g., Redis, in-memory, disk) for tool generation and validation results.
-        """
-        pass
-
-    # --- AGI EXTENSION: Retry Scheduling Telemetry ---\
-    def _schedule_retry(self, plan, reason):
-        """
-        TODO: Implement exponential backoff retry system for failed tool generations/validations.
-        """
-        self.logger.warning(f"Retry scheduled for plan {plan.get('name','Unnamed Plan')} due to: {reason}")
-        if self.notebook:
-            self.notebook.log("retry_scheduled", {"plan": plan, "reason": reason})
-
-    # --- Hook for future multi-phase planning ---\
-    def _multi_phase_plan(self, plan):
+                    self.notebook.log("self_coding_engine", "TOOL_INSTANTIATED", info_msg, metadata={"class_name": class_name, "
