@@ -6,6 +6,7 @@ import importlib.util
 import tempfile
 from typing import Optional, Dict, Any
 from core.utils.path_utils import safe_path_join
+from core.utils.validator_importer import import_validator
 
 logger = logging.getLogger("promethyn.validators")
 logging.basicConfig(level=logging.INFO)
@@ -181,13 +182,54 @@ class BehavioralSimulator:
 # Registration for Promethyn's validator chain (Do NOT overwrite existing logic; inject safely)
 def register_validators(chain: list):
     """
-    Inject Promethyn validators into the provided chain.
+    Inject Promethyn validators into the provided chain using dynamic imports.
     """
-    # Insert at the appropriate position, don't overwrite existing logic
-    if not any(isinstance(v, CodeQualityAssessor) for v in chain):
-        chain.append(CodeQualityAssessor())
-    if not any(isinstance(v, SecurityScanner) for v in chain):
-        chain.append(SecurityScanner())
-    if not any(isinstance(v, BehavioralSimulator) for v in chain):
-        chain.append(BehavioralSimulator())
-    logger.info("Promethyn validators registered.")
+    # List of validator names to dynamically load
+    validator_names = [
+        "CodeQualityAssessor",
+        "SecurityScanner", 
+        "BehavioralSimulator"
+    ]
+    
+    # Mapping of validator names to local classes for fallback
+    local_validator_classes = {
+        "CodeQualityAssessor": CodeQualityAssessor,
+        "SecurityScanner": SecurityScanner,
+        "BehavioralSimulator": BehavioralSimulator
+    }
+    
+    for validator_name in validator_names:
+        # Check if validator is already in chain
+        if not any(type(v).__name__ == validator_name for v in chain):
+            # Try to import validator dynamically
+            validator_module = import_validator(validator_name.lower().replace("assessor", "_assessor").replace("scanner", "_scanner").replace("simulator", "_simulator"))
+            
+            validator_cls = None
+            if validator_module is not None:
+                # Try to get the class from the imported module
+                validator_cls = getattr(validator_module, validator_name, None)
+                if validator_cls is not None:
+                    logger.info(f"Dynamically loaded validator: {validator_name}")
+                else:
+                    logger.warning(f"Validator class {validator_name} not found in imported module — falling back to local class.")
+            else:
+                logger.warning(f"Validator module for {validator_name} not found or failed to load — falling back to local class.")
+            
+            # Fallback to local class if dynamic import failed
+            if validator_cls is None:
+                validator_cls = local_validator_classes.get(validator_name)
+                if validator_cls is not None:
+                    logger.info(f"Using local fallback for validator: {validator_name}")
+                else:
+                    logger.warning(f"Validator {validator_name} not found or failed to load — skipping.")
+                    continue
+            
+            # Instantiate and add to chain
+            try:
+                validator_instance = validator_cls()
+                chain.append(validator_instance)
+                logger.info(f"Validator {validator_name} registered successfully.")
+            except Exception as e:
+                logger.error(f"Failed to instantiate validator {validator_name}: {e}")
+    
+    logger.info("Promethyn validators registration complete.")
