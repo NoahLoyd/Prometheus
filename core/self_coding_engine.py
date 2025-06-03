@@ -6,6 +6,8 @@ import logging
 import threading
 from typing import Dict, Any, Optional, List, Callable, Tuple # <-- Added Tuple
 from dataclasses import dataclass
+import glob
+import pkgutil
 
 from tools.prompt_decomposer import PromptDecomposer
 from tools.module_builder import ModuleBuilderTool
@@ -268,6 +270,9 @@ class SelfCodingEngine:
         # --- Inject new validators at the end of the pipeline in a defensive, modular way ---
         self._register_enhanced_validators()
 
+        # --- Load extended validators with dependency handling ---
+        self.load_extended_validators()
+
         # --- Inject SecurityValidator into registry and VALIDATORS pipeline if not already present ---
         # Ensure PlanVerifier ➝ MathEvaluator ➝ CodeQualityAssessor ➝ SecurityValidator ➝ TestToolRunner
         # Do NOT remove or overwrite any existing validators
@@ -291,6 +296,264 @@ class SelfCodingEngine:
 
         # Setup validation chain with dependencies
         self._setup_validation_chain()
+
+    def load_extended_validators(self):
+        """
+        Enhanced validator loading system with dependency handling.
+        Imports all modules from `validators/extended_validators/` directory,
+        handles dependencies (REQUIRES/OPTIONAL), and logs all activities to AddOnNotebook.
+        """
+        validators_path = os.path.join("validators", "extended_validators")
+        
+        # Log start of validator loading process
+        if self.notebook:
+            self.notebook.log("validator_loading_start", {
+                "path": validators_path,
+                "timestamp": logging.Formatter().formatTime(logging.LogRecord("", 0, "", 0, "", (), None))
+            })
+        
+        # Check if the validators directory exists
+        if not os.path.exists(validators_path):
+            warning_msg = f"Extended validators directory not found: {validators_path}"
+            self.logger.warning(warning_msg)
+            if self.notebook:
+                self.notebook.log("validator_directory_missing", {
+                    "path": validators_path,
+                    "warning": warning_msg
+                })
+            return
+        
+        # Track loaded validators and their dependencies
+        loaded_validators = {}
+        failed_validators = {}
+        dependency_requirements = {}
+        
+        # First pass: Import all validator modules and collect dependency info
+        validator_files = glob.glob(os.path.join(validators_path, "*.py"))
+        validator_files = [f for f in validator_files if not os.path.basename(f).startswith("__")]
+        
+        for validator_file in validator_files:
+            module_name = os.path.splitext(os.path.basename(validator_file))[0]
+            module_path = f"validators.extended_validators.{module_name}"
+            
+            try:
+                # Import the validator module
+                if module_path in sys.modules:
+                    del sys.modules[module_path]  # Force reload
+                
+                validator_module = importlib.import_module(module_path)
+                
+                # Look for validator classes or functions in the module
+                validator_classes = []
+                for attr_name in dir(validator_module):
+                    attr = getattr(validator_module, attr_name)
+                    if (callable(attr) and 
+                        not attr_name.startswith('_') and 
+                        (hasattr(attr, '__call__') or hasattr(attr, 'validate'))):
+                        validator_classes.append((attr_name, attr))
+                
+                if not validator_classes:
+                    # Look for a default validator function
+                    if hasattr(validator_module, 'validate'):
+                        validator_classes.append(('validate', validator_module.validate))
+                    elif hasattr(validator_module, module_name):
+                        validator_classes.append((module_name, getattr(validator_module, module_name)))
+                
+                # Process each validator found in the module
+                for validator_name, validator_obj in validator_classes:
+                    full_validator_name = f"{module_name}.{validator_name}"
+                    
+                    try:
+                        # Check for dependency declarations
+                        requires = getattr(validator_obj, 'REQUIRES', [])
+                        optional = getattr(validator_obj, 'OPTIONAL', [])
+                        
+                        # Store dependency requirements
+                        dependency_requirements[full_validator_name] = {
+                            'requires': requires,
+                            'optional': optional,
+                            'validator': validator_obj,
+                            'module': module_name
+                        }
+                        
+                        loaded_validators[full_validator_name] = {
+                            'validator': validator_obj,
+                            'module': module_name,
+                            'requires': requires,
+                            'optional': optional,
+                            'status': 'loaded'
+                        }
+                        
+                        self.logger.info(f"Loaded extended validator: {full_validator_name}")
+                        if self.notebook:
+                            self.notebook.log("validator_loaded", {
+                                "name": full_validator_name,
+                                "module": module_name,
+                                "requires": requires,
+                                "optional": optional
+                            })
+                    
+                    except Exception as e:
+                        error_msg = f"Error processing validator {validator_name} from {module_name}: {str(e)}"
+                        self.logger.warning(error_msg)
+                        failed_validators[full_validator_name] = {
+                            'error': str(e),
+                            'module': module_name,
+                            'stage': 'processing'
+                        }
+                        if self.notebook:
+                            self.notebook.log("validator_processing_failed", {
+                                "name": full_validator_name,
+                                "module": module_name,
+                                "error": str(e)
+                            })
+            
+            except Exception as e:
+                error_msg = f"Failed to import validator module {module_name}: {str(e)}"
+                self.logger.warning(f"Optional validator failed: {error_msg}")
+                failed_validators[module_name] = {
+                    'error': str(e),
+                    'module': module_name,
+                    'stage': 'import'
+                }
+                if self.notebook:
+                    self.notebook.log("validator_import_failed", {
+                        "module": module_name,
+                        "error": str(e),
+                        "traceback": traceback.format_exc()
+                    })
+        
+        # Second pass: Check dependencies and register validators
+        registered_validators = set()
+        skipped_validators = {}
+        
+        # Helper function to check if dependencies are satisfied
+        def dependencies_satisfied(validator_name, requires_list):
+            unsatisfied = []
+            for req in requires_list:
+                # Check if required dependency is loaded or already registered
+                if (req not in registered_validators and 
+                    req not in loaded_validators and 
+                    req not in self.validator_registry):
+                    unsatisfied.append(req)
+            return len(unsatisfied) == 0, unsatisfied
+        
+        # Keep trying to register validators until no more can be registered
+        max_iterations = len(loaded_validators) + 1
+        iteration = 0
+        
+        while loaded_validators and iteration < max_iterations:
+            iteration += 1
+            registered_this_round = False
+            
+            for validator_name, validator_info in list(loaded_validators.items()):
+                requires = validator_info['requires']
+                validator_obj = validator_info['validator']
+                
+                # Check if dependencies are satisfied
+                deps_satisfied, unsatisfied_deps = dependencies_satisfied(validator_name, requires)
+                
+                if deps_satisfied:
+                    try:
+                        # Instantiate if it's a class
+                        if hasattr(validator_obj, '__init__') and not callable(validator_obj):
+                            validator_instance = validator_obj()
+                        else:
+                            validator_instance = validator_obj
+                        
+                        # Register the validator
+                        self.register_validator_safely(validator_name, validator_instance)
+                        registered_validators.add(validator_name)
+                        registered_this_round = True
+                        
+                        # Remove from pending list
+                        del loaded_validators[validator_name]
+                        
+                        success_msg = f"Successfully registered extended validator: {validator_name}"
+                        self.logger.info(success_msg)
+                        if self.notebook:
+                            self.notebook.log("validator_registered", {
+                                "name": validator_name,
+                                "module": validator_info['module'],
+                                "requires": requires,
+                                "optional": validator_info['optional'],
+                                "status": "success"
+                            })
+                    
+                    except Exception as e:
+                        error_msg = f"Failed to instantiate/register validator {validator_name}: {str(e)}"
+                        self.logger.error(error_msg)
+                        failed_validators[validator_name] = {
+                            'error': str(e),
+                            'module': validator_info['module'],
+                            'stage': 'registration'
+                        }
+                        if self.notebook:
+                            self.notebook.log("validator_registration_failed", {
+                                "name": validator_name,
+                                "module": validator_info['module'],
+                                "error": str(e),
+                                "traceback": traceback.format_exc()
+                            })
+                        # Remove from pending list
+                        del loaded_validators[validator_name]
+                        registered_this_round = True
+                
+                else:
+                    # Dependencies not satisfied, will try again in next iteration
+                    if iteration == max_iterations - 1:  # Last iteration, log as skipped
+                        skip_msg = f"Skipping validator {validator_name} due to unsatisfied dependencies: {unsatisfied_deps}"
+                        self.logger.warning(skip_msg)
+                        skipped_validators[validator_name] = {
+                            'reason': 'unsatisfied_dependencies',
+                            'missing_deps': unsatisfied_deps,
+                            'module': validator_info['module']
+                        }
+                        if self.notebook:
+                            self.notebook.log("validator_skipped", {
+                                "name": validator_name,
+                                "module": validator_info['module'],
+                                "reason": "unsatisfied_dependencies",
+                                "missing_dependencies": unsatisfied_deps,
+                                "requires": requires
+                            })
+            
+            # If no validators were registered this round, break to avoid infinite loop
+            if not registered_this_round:
+                break
+        
+        # Log any remaining unregistered validators
+        for validator_name, validator_info in loaded_validators.items():
+            skip_msg = f"Could not register validator {validator_name} after {iteration} iterations"
+            self.logger.warning(skip_msg)
+            skipped_validators[validator_name] = {
+                'reason': 'dependency_resolution_failed',
+                'module': validator_info['module'],
+                'requires': validator_info['requires']
+            }
+            if self.notebook:
+                self.notebook.log("validator_dependency_resolution_failed", {
+                    "name": validator_name,
+                    "module": validator_info['module'],
+                    "requires": validator_info['requires'],
+                    "iterations": iteration
+                })
+        
+        # Final summary log
+        summary = {
+            "total_attempted": len(validator_files),
+            "successfully_registered": len(registered_validators),
+            "failed_imports": len([v for v in failed_validators.values() if v['stage'] == 'import']),
+            "failed_registrations": len([v for v in failed_validators.values() if v['stage'] in ['processing', 'registration']]),
+            "skipped_dependencies": len(skipped_validators),
+            "registered_validators": list(registered_validators),
+            "failed_validators": list(failed_validators.keys()),
+            "skipped_validators": list(skipped_validators.keys())
+        }
+        
+        self.logger.info(f"Extended validator loading complete: {summary}")
+        if self.notebook:
+            self.notebook.log("validator_loading_complete", summary)
 
     def _setup_validation_chain(self):
         """
@@ -802,7 +1065,7 @@ class SelfCodingEngine:
                             self.logger.debug(f"Validator '{validator_name}' exception during audit: {val_ex}")
 
                 # --- Dynamic import of tool module and class ---\
-                module_path = tool_path[:-3].replace("/", ".").replace("\\\\", ".") if tool_path and tool_path.endswith(".py") else (tool_path.replace("/", ".").replace("\\\\", ".") if tool_path else "")
+                module_path = tool_path[:-3].replace("/", ".").replace("\\\\", ".") if tool_path and tool_path.endswith(".py") else (tool_path.replace("/", ".").replace("\\\\", ".") if tool_path else [...]
                 if not module_path:
                     raise ValueError(f"Cannot determine module path from tool_path: {tool_path}")
 
@@ -1032,143 +1295,3 @@ class SelfCodingEngine:
 
     # --- Hook for future multi-phase planning ---\
     def _multi_phase_plan(self, plan):
-        """
-        TODO: Implement multi-phase build/execution logic for complex agentic projects.
-        """
-        return plan
-
-    def _log_to_notebook(self):
-        if self.notebook:
-            self.notebook.log("log", {"msg": "TestToolRunner failure or other critical event."})
-
-class MathEvaluator:
-    """
-    MathEvaluator
-    -------------
-    Validator for Promethyn AGI that ensures generated tool code:
-      - Handles mathematical reasoning or evaluation safely and accurately.
-      - Detects unsafe or inappropriate math operations (e.g., direct use of `eval`).
-      - Checks for presence of core math operations if the plan or code suggests math intent.
-    Usage:
-        validator = MathEvaluator()
-        result = validator(plan, tool_code, test_code)
-    """
-
-    SAFE_MATH_KEYWORDS = [
-        "+", "-", "*", "/", "//", "%", "**", "math.", "abs(", "round(", "sum(", "min(", "max("
-    ]
-    UNSAFE_MATH_PATTERNS = [
-        "eval(", "exec(", "import os", "import subprocess"
-    ]
-
-    def __call__(self, plan: dict, tool_code: str, test_code: str) -> dict:
-        """
-        Validates the tool code for safe and correct mathematical reasoning.
-        Returns:
-            dict: { 'success': bool, 'error': Optional[str] }
-        """
-        errors = []
-
-        # 1. Detect unsafe math patterns (e.g., eval, exec)
-        for unsafe in self.UNSAFE_MATH_PATTERNS:
-            if unsafe in (tool_code or ""):
-                errors.append(f"Unsafe math operation detected: '{unsafe}'")
-
-        # 2. If the plan or code mentions math, check for at least one math operation
-        plan_str = str(plan).lower()
-        code_str = (tool_code or "").lower()
-        math_intent = any(word in plan_str for word in ["math", "arithmetic", "calculate", "sum", "multiply", "divide", "add", "subtract"])
-        if math_intent:
-            if not any(keyword in code_str for keyword in self.SAFE_MATH_KEYWORDS):
-                errors.append("Math intent detected in plan, but no safe math operations found in code.")
-
-        # 3. Optionally: check for prohibited direct user input to math functions
-        if "input(" in code_str and ("eval(" in code_str or any(op in code_str for op in ["+", "-", "*", "/", "%", "**"])):
-            errors.append("Direct user input used in math operation; consider sanitizing input.")
-
-        return {
-            "success": len(errors) == 0,
-            "error": "; ".join(errors) if errors else None
-        }
-
-
-class PlanVerifier:
-    """
-    PlanVerifier
-    -------------
-    Validator for Promethyn AGI that ensures:
-      - The tool code structure matches the provided plan.
-      - Required class name and methods (e.g., 'run') are implemented as specified.
-      - Detects structural mismatches between plan and implementation.
-    Usage:
-        validator = PlanVerifier()
-        result = validator(plan, tool_code, test_code)
-    """
-
-    def __call__(self, plan: dict, tool_code: str, test_code: str) -> dict:
-        """
-        Validates that the code matches the plan structure.
-        Returns:
-            dict: { 'success': bool, 'error': Optional[str] }
-        """
-        errors = []
-        plan_class = plan.get("class")
-        plan_methods = plan.get("methods", ["run"]) # Default to checking for "run"
-
-        # 1. Check if the class is implemented in code
-        if plan_class and f"class {plan_class}" not in (tool_code or ""):
-            errors.append(f"Class '{plan_class}' from plan not found in tool code.")
-        elif not plan_class and "class " not in (tool_code or ""): # If no class in plan, still expect some class
-             errors.append("No class definition found in tool code, and no class specified in plan.")
-
-
-        # 2. Check for each required method in the class (default: 'run')
-        # This check is basic; it doesn't ensure method is in the correct class if multiple classes exist.
-        for method_name in plan_methods:
-            method_signature = f"def {method_name}("
-            if method_signature not in (tool_code or ""):
-                errors.append(f"Required method '{method_name}' from plan not found in tool code.")
-
-        # 3. Check that test code exists if expected by plan or convention
-        # Plan might specify test_code presence or TestToolRunner might expect it.
-        # This is a basic check for test code content.
-        if not test_code or (not ("def test" in test_code or "class Test" in test_code)):
-            errors.append("Test code missing or does not define a recognizable test function/class.")
-
-        return {
-            "success": len(errors) == 0,
-            "error": "; ".join(errors) if errors else None
-        }
-
-# Test-mode only validator check (delete after confirming)
-if __name__ == "__main__":
-    # This is a basic test stub, needs more elaborate setup for full testing
-    msg = "SelfCodingEngine module loaded. Constructing instance for basic check..."
-    
-    # Mock notebook for testing
-    class MockNotebook:
-        def __init__(self):
-            self.logs = []
-        def log(self, event_type, data):
-            self.logs.append({"type": event_type, "data": data})
-            print(f"[MockNotebook] Event: {event_type}, Data: {data}")
-
-    mock_notebook_instance = MockNotebook()
-    engine = SelfCodingEngine(notebook=mock_notebook_instance)
-    
-    # Log initialization to notebook
-    if mock_notebook_instance:
-        mock_notebook_instance.log("self_coding_engine", {"message": msg, "registered_validators": list(engine.validator_registry.keys()), "validators_list": engine.VALIDATORS})
-    
-    print(msg)
-    print("Registered validators:", list(engine.validator_registry.keys()))
-    print("VALIDATORS list:", engine.VALIDATORS)
-
-    # Example of how one might test process_prompt (requires more setup for files etc.)
-    # test_prompt = "Create a simple calculator tool that can add two numbers."
-    # print(f"\nTesting process_prompt with: '{test_prompt}'")
-    # results = engine.process_prompt(test_prompt)
-    # print("process_prompt results:", results)
-    # print("\nMock Notebook Logs:")
-    # for log_entry in mock_notebook_instance.logs:
-    #     print(log_entry)        
