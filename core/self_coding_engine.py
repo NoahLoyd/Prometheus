@@ -13,6 +13,7 @@ from addons.notebook import AddOnNotebook
 from tools.test_tool_runner import TestToolRunner  # <--- NEW IMPORT
 from core.validators.extended_validators import register_validators
 from core.sandbox_runner import SandboxRunner # <--- ADDED FOR SANDBOX INTEGRATION
+from core.utils.path_utils import safe_path_join
 
 # --- BEGIN: Fallback Validator Import System ---
 VALIDATOR_PATHS = ["validators", "core.validators"]
@@ -332,8 +333,8 @@ class SelfCodingEngine:
             test_code = plan.get("test_code")
 
             # Compute output paths
-            tool_path = os.path.join("tools", tool_file) if tool_file else None
-            test_path = os.path.join("test", test_file) if test_file else None  # test/ not tests/
+            tool_path = safe_path_join("tools", tool_file) if tool_file else None
+            test_path = safe_path_join("test", test_file) if test_file else None  # test/ not tests/
             try:
                 # --- Overwrite protection: skip or error if exists ---
                 if tool_path and os.path.exists(tool_path):
@@ -622,7 +623,7 @@ class SelfCodingEngine:
                             self.logger.debug(f"Validator '{validator_name}' exception during audit: {val_ex}")
 
                 # --- Dynamic import of tool module and class ---\
-                module_path = tool_path[:-3].replace("/", ".").replace("\\\\", ".") if tool_path and tool_path.endswith(".py") else (tool_path.replace("/", ".").replace("\\\\", ".") if tool_path else None) # PEP 8 fix for long line
+                module_path = tool_path[:-3].replace("/", ".").replace("\\\\", ".") if tool_path and tool_path.endswith(".py") else (tool_path.replace("/", ".").replace("\\\\", ".") if tool_path else [...]
                 if not module_path:
                     raise ValueError(f"Cannot determine module path from tool_path: {tool_path}")
 
