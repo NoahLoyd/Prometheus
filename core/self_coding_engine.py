@@ -5,6 +5,7 @@ import os
 import logging
 import threading
 from typing import Dict, Any, Optional, List, Callable, Tuple # <-- Added Tuple
+from dataclasses import dataclass
 
 from tools.prompt_decomposer import PromptDecomposer
 from tools.module_builder import ModuleBuilderTool
@@ -59,6 +60,179 @@ for validator_name in validator_names:
         logger.warning(f"Exception while importing validator '{validator_name}': {e}")
 # --- End: Dynamic Validator Imports ---
 
+@dataclass
+class ValidationResult:
+    """
+    Result of a single validator execution.
+    """
+    success: bool
+    error: Optional[str] = None
+    info: Optional[str] = None
+    passed: Optional[bool] = None  # For TestToolRunner compatibility
+    exception: Optional[str] = None
+    
+    def __post_init__(self):
+        # Handle legacy compatibility for TestToolRunner
+        if self.passed is not None and self.success is None:
+            self.success = self.passed
+
+class ValidationChain:
+    """
+    ValidationChain manages the execution of validators in a dependency-aware manner.
+    Supports adding validators with optional dependencies and executes them in proper order.
+    """
+    
+    def __init__(self, logger: logging.Logger):
+        self.validators = {}  # name -> validator callable
+        self.dependencies = {}  # name -> list of dependency names
+        self.execution_order = []  # computed execution order
+        self.logger = logger
+    
+    def add_validator(self, name: str, validator: Callable, dependencies: Optional[List[str]] = None):
+        """
+        Add a validator to the chain with optional dependencies.
+        
+        :param name: Unique validator name
+        :param validator: Callable validator instance
+        :param dependencies: List of validator names this validator depends on
+        """
+        if not callable(validator):
+            self.logger.warning(f"Validator '{name}' is not callable, skipping.")
+            return
+        
+        self.validators[name] = validator
+        self.dependencies[name] = dependencies or []
+        self._compute_execution_order()
+    
+    def _compute_execution_order(self):
+        """
+        Compute the execution order based on dependencies using topological sort.
+        """
+        # Simple topological sort implementation
+        visited = set()
+        temp_visited = set()
+        order = []
+        
+        def visit(name):
+            if name in temp_visited:
+                self.logger.error(f"Circular dependency detected involving validator '{name}'")
+                return
+            if name in visited:
+                return
+            
+            temp_visited.add(name)
+            for dep in self.dependencies.get(name, []):
+                if dep in self.validators:
+                    visit(dep)
+                else:
+                    self.logger.warning(f"Validator '{name}' depends on '{dep}' which is not registered")
+            
+            temp_visited.remove(name)
+            visited.add(name)
+            order.append(name)
+        
+        for validator_name in self.validators:
+            if validator_name not in visited:
+                visit(validator_name)
+        
+        self.execution_order = order
+    
+    def run(self, context: Dict[str, Any]) -> Tuple[bool, List[Dict[str, Any]]]:
+        """
+        Run all validators in dependency order.
+        
+        :param context: Context containing plan, tool_code, test_code, tool_path, test_path
+        :return: Tuple of (overall_success, detailed_results)
+        """
+        results = []
+        failed_validators = set()
+        overall_success = True
+        
+        for validator_name in self.execution_order:
+            validator = self.validators[validator_name]
+            
+            # Check if dependencies were satisfied
+            deps_satisfied = True
+            for dep in self.dependencies[validator_name]:
+                if dep in failed_validators:
+                    deps_satisfied = False
+                    break
+            
+            if not deps_satisfied:
+                skip_result = ValidationResult(
+                    success=True,
+                    info=f"Validator '{validator_name}' skipped due to failed dependencies"
+                )
+                results.append({"validator": validator_name, "result": skip_result.__dict__})
+                self.logger.info(f"Validator '{validator_name}' skipped due to failed dependencies")
+                continue
+            
+            # Execute validator
+            try:
+                self.logger.debug(f"Running validator '{validator_name}'")
+                
+                # Handle different validator signatures
+                if validator_name == "SecurityValidator":
+                    tool_path = context.get("tool_path")
+                    if tool_path and callable(validator):
+                        raw_result = validator(tool_path)
+                    elif not tool_path:
+                        raw_result = {"success": True, "info": f"{validator_name} skipped: tool_path not available."}
+                    else:
+                        raw_result = {"success": False, "error": f"{validator_name} is not configured correctly."}
+                elif validator_name == "TestToolRunner":
+                    # Special handling for TestToolRunner
+                    test_path = context.get("test_path")
+                    if test_path and hasattr(validator, 'run_test_file'):
+                        raw_result = validator.run_test_file(test_path)
+                    else:
+                        raw_result = {"passed": True, "success": True, "info": "TestToolRunner skipped: no test_path"}
+                else:
+                    # Standard validator signature
+                    plan = context.get("plan", {})
+                    tool_code = context.get("tool_code", "")
+                    test_code = context.get("test_code", "")
+                    raw_result = validator(plan, tool_code, test_code)
+                
+                # Convert to ValidationResult
+                if isinstance(raw_result, dict):
+                    validation_result = ValidationResult(
+                        success=raw_result.get("success", raw_result.get("passed", True)),
+                        error=raw_result.get("error"),
+                        info=raw_result.get("info"),
+                        passed=raw_result.get("passed"),
+                        exception=raw_result.get("exception")
+                    )
+                else:
+                    validation_result = ValidationResult(success=False, error=f"Invalid result type from {validator_name}")
+                
+                results.append({"validator": validator_name, "result": validation_result.__dict__})
+                
+                if not validation_result.success:
+                    overall_success = False
+                    failed_validators.add(validator_name)
+                    self.logger.warning(f"Validator '{validator_name}' failed: {validation_result.error}")
+                    # Fail immediately on validation failure
+                    break
+                else:
+                    self.logger.debug(f"Validator '{validator_name}' passed")
+                    
+            except Exception as e:
+                overall_success = False
+                failed_validators.add(validator_name)
+                tb_str = traceback.format_exc()
+                error_result = ValidationResult(
+                    success=False,
+                    error=str(e),
+                    exception=tb_str
+                )
+                results.append({"validator": validator_name, "result": error_result.__dict__})
+                self.logger.error(f"Exception in validator '{validator_name}': {str(e)}\n{tb_str}")
+                # Fail immediately on exception
+                break
+        
+        return overall_success, results
+
 class SelfCodingEngine:
     """
     SelfCodingEngine orchestrates the self-coding AGI workflow:
@@ -80,6 +254,9 @@ class SelfCodingEngine:
         self.validator_registry = {}  # For future validator plug-in
         self.validator_lock = threading.Lock()  # Thread-safe validator registration
         self.sandbox_runner = SandboxRunner() # <--- ADDED FOR SANDBOX INTEGRATION
+
+        # Initialize validation chain
+        self.validation_chain = ValidationChain(self.logger)
 
         # --- Register core validators safely on instantiation ---
         self.register_validator_safely("MathEvaluator", MathEvaluator())
@@ -112,6 +289,38 @@ class SelfCodingEngine:
                 else:
                     idx = len(vlist)
                 vlist.insert(idx, "SecurityValidator")
+
+        # Setup validation chain with dependencies
+        self._setup_validation_chain()
+
+    def _setup_validation_chain(self):
+        """
+        Setup the validation chain with proper dependencies.
+        """
+        # Add validators to chain with dependencies
+        self.validation_chain.add_validator("PlanVerifier", self.validator_registry.get("PlanVerifier"))
+        self.validation_chain.add_validator("MathEvaluator", self.validator_registry.get("MathEvaluator"), 
+                                           dependencies=["PlanVerifier"])
+        
+        if "CodeQualityAssessor" in self.validator_registry:
+            self.validation_chain.add_validator("CodeQualityAssessor", self.validator_registry.get("CodeQualityAssessor"),
+                                               dependencies=["MathEvaluator"])
+        
+        if "SecurityValidator" in self.validator_registry:
+            deps = ["CodeQualityAssessor"] if "CodeQualityAssessor" in self.validator_registry else ["MathEvaluator"]
+            self.validation_chain.add_validator("SecurityValidator", self.validator_registry.get("SecurityValidator"),
+                                               dependencies=deps)
+        
+        # Add TestToolRunner last
+        if self.test_runner:
+            last_deps = []
+            if "SecurityValidator" in self.validator_registry:
+                last_deps = ["SecurityValidator"]
+            elif "CodeQualityAssessor" in self.validator_registry:
+                last_deps = ["CodeQualityAssessor"]
+            else:
+                last_deps = ["MathEvaluator"]
+            self.validation_chain.add_validator("TestToolRunner", self.test_runner, dependencies=last_deps)
 
     def register_validator_safely(self, name: str, validator_cls: Callable):
         """
@@ -214,113 +423,49 @@ class SelfCodingEngine:
 
     def _run_validation_pipeline(self, plan: Dict[str, Any], tool_code: str, test_code: str, tool_path: Optional[str], test_path: Optional[str]) -> Tuple[bool, List[Dict[str, Any]]]:
         """
-        Runs a specific sequence of validators:
-        PlanVerifier -> MathEvaluator -> CodeQualityAssessor -> SecurityValidator -> TestToolRunner.
-        Uses self.validator_registry for most validators, and self.test_runner for TestToolRunner.
+        Runs validation pipeline using ValidationChain.
+        Uses self.validator_registry for validators, executed through ValidationChain.
         Logs individual validator failures/exceptions to self.notebook.
         Returns:
             - bool: Overall validation success.
             - List[Dict[str, Any]]: A list of dictionaries, each containing 'validator' name and 'result'.
         """
-        all_results_summary: List[Dict[str, Any]] = []
-        overall_success = True
-
-        validator_names_in_sequence = [
-            "PlanVerifier",
-            "MathEvaluator",
-            "CodeQualityAssessor",
-            "SecurityValidator", # Handled via self.validator_registry which holds `validate_security`
-        ]
-
-        for validator_name in validator_names_in_sequence:
-            validator_instance = self.validator_registry.get(validator_name)
-            current_validator_result = None # Define outside try block
-
-            if validator_instance:
-                try:
-                    if validator_name == "SecurityValidator":
-                        if tool_path and callable(validator_instance):
-                             current_validator_result = validator_instance(tool_path)
-                        elif not tool_path:
-                            current_validator_result = {"success": True, "info": f"{validator_name} skipped: tool_path not available."}
-                            self.logger.info(f"{validator_name} skipped as tool_path is not available for plan: {plan.get('name', 'N/A')}.")
-                        else: # Not callable or other issue
-                            current_validator_result = {"success": False, "error": f"{validator_name} is not configured correctly or tool_path missing for plan: {plan.get('name', 'N/A')}."}
-                            self.logger.warning(current_validator_result["error"])
-                            overall_success = False # A misconfigured critical validator is a failure
-                    else:
-                        current_validator_result = validator_instance(plan, tool_code, test_code)
-                    
-                    all_results_summary.append({"validator": validator_name, "result": current_validator_result})
-                    
-                    if not current_validator_result.get("success", True):
-                        overall_success = False
-                        if self.notebook:
-                            self.notebook.log("validator_failure", {
-                                "plan": plan,
-                                "validator": validator_name,
-                                "error": current_validator_result.get("error", "Unknown validation error")
-                            })
-                        self.logger.warning(f"Validator '{validator_name}' failed for plan: {plan.get('name', 'N/A')}. Error: {current_validator_result.get('error')}")
-
-                except Exception as e:
-                    overall_success = False
-                    tb_str = traceback.format_exc()
-                    error_result = {"success": False, "error": str(e), "exception": tb_str}
-                    all_results_summary.append({"validator": validator_name, "result": error_result})
-                    if self.notebook:
-                        self.notebook.log("validator_exception", {
-                            "plan": plan,
-                            "validator": validator_name,
-                            "exception": str(e),
-                            "traceback": tb_str
-                        })
-                    self.logger.error(f"Exception in validator '{validator_name}' for plan: {plan.get('name', 'N/A')}. Exception: {str(e)}\n{tb_str}")
-            else:
-                skip_result = {"success": True, "info": f"Validator '{validator_name}' not found in registry, skipped."}
-                all_results_summary.append({"validator": validator_name, "result": skip_result})
-                self.logger.warning(f"Validator '{validator_name}' not found in registry for plan: {plan.get('name', 'N/A')}. Skipped.")
-                # Depending on criticality, a missing validator might set overall_success = False
-                # For now, it's logged and skipped as per "handle missing ones".
-
-        # TestToolRunner (using self.test_runner, runs on test_path)
-        if self.test_runner and test_path:
-            current_test_runner_result = None # Define outside try block
-            try:
-                current_test_runner_result = self.test_runner.run_test_file(test_path)
-                all_results_summary.append({"validator": "TestToolRunner", "result": current_test_runner_result})
-
-                if not current_test_runner_result.get("passed", False): # TestToolRunner uses "passed"
-                    overall_success = False
-                    if self.notebook:
-                        self.notebook.log("test_tool_runner_failure", {
-                            "plan": plan,
-                            "test_result": current_test_runner_result,
-                            "error": current_test_runner_result.get("error", "TestToolRunner reported failure.")
-                        })
-                    self.logger.warning(f"TestToolRunner failed for test_path '{test_path}' related to plan {plan.get('name', 'N/A')}. Result: {current_test_runner_result}")
+        # Prepare context for validators
+        context = {
+            "plan": plan,
+            "tool_code": tool_code,
+            "test_code": test_code,
+            "tool_path": tool_path,
+            "test_path": test_path
+        }
+        
+        # Run validation chain
+        overall_success, detailed_results = self.validation_chain.run(context)
+        
+        # Log results to notebook
+        for result_entry in detailed_results:
+            validator_name = result_entry["validator"]
+            result = result_entry["result"]
             
-            except Exception as e:
-                overall_success = False
-                tb_str = traceback.format_exc()
-                error_result = {"passed": False, "success": False, "error": str(e), "exception": tb_str}
-                all_results_summary.append({"validator": "TestToolRunner", "result": error_result})
+            if not result.get("success", True):
                 if self.notebook:
-                    self.notebook.log("test_tool_runner_exception", {
+                    self.notebook.log("validator_failure", {
                         "plan": plan,
-                        "test_path": test_path,
-                        "exception": str(e),
-                        "traceback": tb_str
+                        "validator": validator_name,
+                        "error": result.get("error", "Unknown validation error")
                     })
-                self.logger.error(f"Exception in TestToolRunner for test_path '{test_path}' (plan: {plan.get('name', 'N/A')}). Exception: {str(e)}\n{tb_str}")
-        elif not self.test_runner:
-             all_results_summary.append({"validator": "TestToolRunner", "result": {"passed": True, "success": True, "info": "TestToolRunner not available/configured."}}) # Assume success if not r[...]
-             self.logger.info(f"TestToolRunner not available/configured, skipped for plan: {plan.get('name', 'N/A')}.")
-        elif not test_path:
-             all_results_summary.append({"validator": "TestToolRunner", "result": {"passed": True, "success": True, "info": "TestToolRunner skipped: test_path not available."}}) # Assume success [...]
-             self.logger.info(f"TestToolRunner skipped as test_path is not available for plan: {plan.get('name', 'N/A')}.")
-
-        return overall_success, all_results_summary
+                self.logger.warning(f"Validator '{validator_name}' failed for plan: {plan.get('name', 'N/A')}. Error: {result.get('error')}")
+            
+            if result.get("exception"):
+                if self.notebook:
+                    self.notebook.log("validator_exception", {
+                        "plan": plan,
+                        "validator": validator_name,
+                        "exception": result.get("error"),
+                        "traceback": result.get("exception")
+                    })
+        
+        return overall_success, detailed_results
 
     def process_prompt(
         self,
@@ -1023,4 +1168,4 @@ if __name__ == "__main__":
     # print("process_prompt results:", results)
     # print("\nMock Notebook Logs:")
     # for log_entry in mock_notebook_instance.logs:
-    #     print(log_entry)
+    #     print(log_entry)        
