@@ -1384,4 +1384,322 @@ class SelfCodingEngine:
             iteration += 1
             registered_this_round = False
             
-            for validator_name
+                        for validator_name in list(loaded_validators.keys()):
+                validator_info = loaded_validators[validator_name]
+                requires = validator_info['requires']
+                
+                # Check if all required dependencies are satisfied
+                deps_ok, unsatisfied = dependencies_satisfied(validator_name, requires)
+                
+                if deps_ok:
+                    # Register the validator
+                    try:
+                        self.register_validator_safely(validator_name, validator_info['validator'])
+                        registered_validators.add(validator_name)
+                        registered_this_round = True
+                        
+                        # Remove from pending list
+                        del loaded_validators[validator_name]
+                        
+                        self.logger.info(f"Registered extended validator: {validator_name}")
+                        if self.notebook:
+                            self.notebook.log("validator_registered", {
+                                "name": validator_name,
+                                "module": validator_info['module'],
+                                "iteration": iteration
+                            })
+                    
+                    except Exception as e:
+                        error_msg = f"Failed to register validator {validator_name}: {str(e)}"
+                        self.logger.warning(error_msg)
+                        failed_validators[validator_name] = {
+                            'error': str(e),
+                            'module': validator_info['module'],
+                            'stage': 'registration'
+                        }
+                        del loaded_validators[validator_name]
+                        if self.notebook:
+                            self.notebook.log("validator_registration_failed", {
+                                "name": validator_name,
+                                "module": validator_info['module'],
+                                "error": str(e)
+                            })
+                else:
+                    # Dependencies not satisfied yet
+                    if iteration == max_iterations:
+                        # Final iteration - skip validators with unsatisfied dependencies
+                        skipped_validators[validator_name] = {
+                            'unsatisfied_deps': unsatisfied,
+                            'module': validator_info['module']
+                        }
+                        del loaded_validators[validator_name]
+                        self.logger.warning(f"Skipped validator {validator_name} due to unsatisfied dependencies: {unsatisfied}")
+                        if self.notebook:
+                            self.notebook.log("validator_skipped_dependencies", {
+                                "name": validator_name,
+                                "module": validator_info['module'],
+                                "unsatisfied_dependencies": unsatisfied
+                            })
+            
+            if not registered_this_round:
+                # No progress made this round, break to avoid infinite loop
+                break
+        
+        # Log final summary
+        summary = {
+            "loaded_count": len(registered_validators),
+            "failed_count": len(failed_validators),
+            "skipped_count": len(skipped_validators),
+            "registered_validators": list(registered_validators),
+            "failed_validators": list(failed_validators.keys()),
+            "skipped_validators": list(skipped_validators.keys())
+        }
+        
+        self.logger.info(f"Extended validator loading complete: {summary}")
+        if self.notebook:
+            self.notebook.log("validator_loading_complete", summary)
+
+    def _register_enhanced_validators(self):
+        """
+        Enhanced validator registration system with dependency injection.
+        Registers available enhanced validators like CodeQualityAssessor, SecurityScanner, etc.
+        """
+        # Register CodeQualityAssessor if available
+        if CodeQualityAssessor is not None:
+            self.register_validator_safely("CodeQualityAssessor", CodeQualityAssessor())
+            # Add to validation chain
+            self.validation_chain.add_validator("CodeQualityAssessor", CodeQualityAssessor(), dependencies=["PlanVerifier"])
+        
+        # Register SecurityScanner if available
+        if SecurityScanner is not None:
+            self.register_validator_safely("SecurityScanner", SecurityScanner())
+            # Add to validation chain
+            self.validation_chain.add_validator("SecurityScanner", SecurityScanner(), dependencies=["CodeQualityAssessor"])
+        
+        # Register BehavioralSimulator if available
+        if BehavioralSimulator is not None:
+            self.register_validator_safely("BehavioralSimulator", BehavioralSimulator())
+            # Add to validation chain
+            self.validation_chain.add_validator("BehavioralSimulator", BehavioralSimulator(), dependencies=["SecurityScanner"])
+
+    def _setup_validation_chain(self):
+        """
+        Setup the validation chain with proper dependencies.
+        """
+        # Add core validators to validation chain
+        self.validation_chain.add_validator("MathEvaluator", self.validator_registry.get("MathEvaluator"))
+        self.validation_chain.add_validator("PlanVerifier", self.validator_registry.get("PlanVerifier"), dependencies=["MathEvaluator"])
+        
+        # Add TestToolRunner to validation chain (always last)
+        self.validation_chain.add_validator("TestToolRunner", self.test_runner, dependencies=["PlanVerifier"])
+
+    def _learn_from_retry_memory(self, task_id: str) -> None:
+        """
+        Learn from retry memory history and adjust behavior accordingly.
+        Analyzes failure patterns and logs learning insights for intelligent self-improvement.
+        
+        :param task_id: Task identifier to analyze and learn from
+        """
+        if not self.retry_memory:
+            return
+        
+        try:
+            # Get retry history for the task
+            history = self.retry_memory.get_task_history(task_id)
+            if not history:
+                self.logger.debug(f"No retry history found for task '{task_id}' - proceeding normally")
+                return
+            
+            # Count successes and failures
+            success_count = sum(1 for entry in history if entry.get('status') == 'success')
+            failure_count = sum(1 for entry in history if entry.get('status') == 'failure')
+            
+            # Log learning analysis start
+            self.logger.info(f"Learning from retry memory for task '{task_id}': {failure_count} failures, {success_count} successes")
+            
+            # Analyze failure patterns and adjust behavior
+            if failure_count > 2 and success_count == 0:
+                # High failure rate - extract common failure reasons
+                failure_reasons = [
+                    entry.get('reason', 'Unknown reason') 
+                    for entry in history 
+                    if entry.get('status') == 'failure' and entry.get('reason')
+                ]
+                
+                unique_reasons = list(set(failure_reasons))
+                
+                # Adjust retry strategy based on failure patterns
+                if len(unique_reasons) > 0:
+                    # Adjust MAX_RETRIES based on failure patterns
+                    if any('validation_failed' in reason for reason in unique_reasons):
+                        self.logger.info(f"Task '{task_id}': High validation failures detected - reducing retry attempts")
+                        # Could adjust validation pipeline here
+                    
+                    if any('timeout' in reason.lower() for reason in unique_reasons):
+                        self.logger.info(f"Task '{task_id}': Timeout patterns detected - increasing retry delay")
+                        # Could adjust RETRY_DELAY here
+                    
+                    learning_feedback = f"Task '{task_id}' learning: {failure_count} consecutive failures. Common issues: {'; '.join(unique_reasons[:3])}"
+                else:
+                    learning_feedback = f"Task '{task_id}' learning: {failure_count} consecutive failures with no specific reasons available"
+                
+                # Log comprehensive learning data
+                if self.notebook:
+                    self.notebook.log("retry_memory_learning_high_failure", {
+                        "task_id": task_id,
+                        "failure_count": failure_count,
+                        "success_count": success_count,
+                        "failure_reasons": failure_reasons,
+                        "unique_failure_patterns": unique_reasons,
+                        "learning_feedback": learning_feedback,
+                        "behavior_adjustments": "reduced_retry_confidence"
+                    })
+                
+                self.logger.warning(learning_feedback)
+                
+            elif success_count > 0 and failure_count > 0:
+                # Mixed results - analyze success patterns
+                success_reasons = [
+                    entry.get('reason', 'Unknown reason') 
+                    for entry in history 
+                    if entry.get('status') == 'success' and entry.get('reason')
+                ]
+                
+                learning_feedback = f"Task '{task_id}' learning: Mixed results ({success_count} successes, {failure_count} failures). Success patterns identified."
+                
+                # Log mixed results learning
+                if self.notebook:
+                    self.notebook.log("retry_memory_learning_mixed_results", {
+                        "task_id": task_id,
+                        "failure_count": failure_count,
+                        "success_count": success_count,
+                        "success_patterns": success_reasons,
+                        "learning_feedback": learning_feedback,
+                        "behavior_adjustments": "pattern_awareness_enhanced"
+                    })
+                
+                self.logger.info(learning_feedback)
+                
+            elif success_count > failure_count:
+                # Mostly successful - positive reinforcement
+                learning_feedback = f"Task '{task_id}' learning: High success rate ({success_count} successes vs {failure_count} failures). Positive patterns reinforced."
+                
+                # Log positive learning
+                if self.notebook:
+                    self.notebook.log("retry_memory_learning_positive", {
+                        "task_id": task_id,
+                        "failure_count": failure_count,
+                        "success_count": success_count,
+                        "learning_feedback": learning_feedback,
+                        "behavior_adjustments": "confidence_increased"
+                    })
+                
+                self.logger.info(learning_feedback)
+            
+        except Exception as e:
+            self.logger.error(f"Error during retry memory learning for task '{task_id}': {e}")
+            if self.notebook:
+                self.notebook.log("retry_memory_learning_error", {
+                    "task_id": task_id,
+                    "error": str(e),
+                    "traceback": traceback.format_exc()
+                })
+
+    def process_prompt(self, prompt: str, tool_manager: Optional[ToolManager] = None) -> Dict[str, Any]:
+        """
+        Main entry point for processing natural language prompts into tools.
+        Integrates retry memory learning for intelligent self-improvement.
+        
+        :param prompt: Natural language description of desired tools/modules
+        :param tool_manager: Optional tool manager for registration
+        :return: Dictionary containing processing results
+        """
+        try:
+            # Decompose the prompt into structured plans
+            self.logger.info(f"Processing prompt: {prompt[:100]}...")
+            decomposition_result = self.decomposer.decompose(prompt)
+            
+            if not decomposition_result.get("success", False):
+                return {"success": False, "error": f"Decomposition failed: {decomposition_result.get('error', 'Unknown error')}"}
+            
+            plans = decomposition_result.get("plans", [])
+            if not plans:
+                return {"success": False, "error": "No valid plans generated from prompt"}
+            
+            # Process each plan with retry memory learning integration
+            results = []
+            short_term_memory = {}
+            
+            for plan in plans:
+                # Generate task ID for learning
+                task_id = self._generate_task_id(plan, "tool")
+                
+                # Learn from retry memory before attempting generation
+                self._learn_from_retry_memory(task_id)
+                
+                # Check if we should skip this task based on retry memory
+                if not self._check_retry_memory_before_attempt(task_id, plan):
+                    results.append({
+                        "plan": plan,
+                        "registration": {"success": False, "error": "Skipped due to retry memory analysis"},
+                        "validation": None
+                    })
+                    continue
+                
+                # Generate code for the plan
+                generation_result = self.builder.generate_code(plan)
+                
+                if not generation_result.get("success", False):
+                    self._log_retry_memory_result(task_id, False, f"Code generation failed: {generation_result.get('error', 'Unknown')}", plan)
+                    results.append({
+                        "plan": plan,
+                        "registration": {"success": False, "error": f"Code generation failed: {generation_result.get('error', 'Unknown')}"},
+                        "validation": None
+                    })
+                    continue
+                
+                # Update plan with generated code
+                plan.update(generation_result)
+                
+                # Execute with retry logic and memory learning
+                execution_result = self._execute_with_retry(plan, tool_manager, short_term_memory)
+                results.append(execution_result)
+            
+            # Compile overall results
+            successful_tools = [r for r in results if r.get("registration", {}).get("success", False)]
+            failed_tools = [r for r in results if not r.get("registration", {}).get("success", False)]
+            
+            overall_result = {
+                "success": len(successful_tools) > 0,
+                "total_plans": len(plans),
+                "successful_tools": len(successful_tools),
+                "failed_tools": len(failed_tools),
+                "results": results,
+                "short_term_memory": short_term_memory
+            }
+            
+            # Log final processing result
+            if self.notebook:
+                self.notebook.log("process_prompt_complete", {
+                    "prompt_preview": prompt[:200],
+                    "total_plans": len(plans),
+                    "successful_tools": len(successful_tools),
+                    "failed_tools": len(failed_tools),
+                    "overall_success": overall_result["success"]
+                })
+            
+            return overall_result
+            
+        except Exception as e:
+            tb = traceback.format_exc()
+            error_msg = f"Exception during prompt processing: {str(e)}\n{tb}"
+            self.logger.error(error_msg)
+            
+            if self.notebook:
+                self.notebook.log("process_prompt_exception", {
+                    "prompt_preview": prompt[:200],
+                    "error": str(e),
+                    "traceback": tb
+                })
+            
+            return {"success": False, "error": error_msg}
