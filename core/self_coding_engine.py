@@ -1556,8 +1556,16 @@ class SelfCodingEngine:
                     })
                 
                 self.logger.warning(learning_feedback)
-                
-            elif success_count > 0 and failure_count > 0:
+                # Add after self.logger.warning(learning_feedback)
+self.track_self_improvement(
+    task_id=task_id,
+    improvement_type="confidence_adjustment", 
+    before_state={"failure_count": 0, "success_count": 0},
+    after_state={"failure_count": failure_count, "success_count": success_count},
+    confidence_delta=-0.3,  # Reduced confidence due to failures
+    pattern_insights=unique_reasons
+)            
+elif success_count > 0 and failure_count > 0:
                 # Mixed results - analyze success patterns
                 success_reasons = [
                     entry.get('reason', 'Unknown reason') 
@@ -1579,7 +1587,15 @@ class SelfCodingEngine:
                     })
                 
                 self.logger.info(learning_feedback)
-                
+# Add after self.logger.info(learning_feedback)
+self.track_self_improvement(
+    task_id=task_id,
+    improvement_type="pattern_recognition",
+    before_state={"patterns_known": 0},
+    after_state={"patterns_identified": len(success_reasons)},
+    confidence_delta=0.1,  # Slight confidence boost from learning
+    pattern_insights=success_reasons
+)
             elif success_count > failure_count:
                 # Mostly successful - positive reinforcement
                 learning_feedback = f"Task '{task_id}' learning: High success rate ({success_count} successes vs {failure_count} failures). Positive patterns reinforced."
@@ -1595,8 +1611,15 @@ class SelfCodingEngine:
                     })
                 
                 self.logger.info(learning_feedback)
-            
-        except Exception as e:
+            # Add after self.logger.info(learning_feedback)
+self.track_self_improvement(
+    task_id=task_id,
+    improvement_type="confidence_adjustment",
+    before_state={"success_rate": 0.5},
+    after_state={"success_rate": success_count / (success_count + failure_count)},
+    confidence_delta=0.2,  # Increased confidence from success
+    pattern_insights=[f"High success rate pattern for {task_id}"]
+)        except Exception as e:
             self.logger.error(f"Error during retry memory learning for task '{task_id}': {e}")
             if self.notebook:
                 self.notebook.log("retry_memory_learning_error", {
@@ -1604,8 +1627,185 @@ class SelfCodingEngine:
                     "error": str(e),
                     "traceback": traceback.format_exc()
                 })
+    def track_self_improvement(self, task_id: str, improvement_type: str, 
+                              before_state: Dict[str, Any], after_state: Dict[str, Any],
+                              confidence_delta: float = 0.0, pattern_insights: Optional[List[str]] = None) -> None:
+        """
+        Track and log self-improvement behaviors, confidence adjustments, and pattern learning.
+        Provides detailed analytics on how the AGI system evolves and adapts over time.
+        
+        :param task_id: Task identifier associated with the improvement
+        :param improvement_type: Type of improvement (confidence_adjustment, pattern_recognition, strategy_change, etc.)
+        :param before_state: State/metrics before the improvement
+        :param after_state: State/metrics after the improvement  
+        :param confidence_delta: Change in confidence level (-1.0 to 1.0)
+        :param pattern_insights: List of insights or patterns discovered
+        """
+        try:
+            # Generate improvement tracking data
+            improvement_data = {
+                "task_id": task_id,
+                "improvement_type": improvement_type,
+                "timestamp": time.time(),
+                "confidence_delta": confidence_delta,
+                "pattern_insights": pattern_insights or [],
+                "before_state": before_state,
+                "after_state": after_state,
+                "system_evolution": {
+                    "learning_session": True,
+                    "adaptation_level": abs(confidence_delta) if confidence_delta else 0.0,
+                    "pattern_count": len(pattern_insights) if pattern_insights else 0
+                }
+            }
+            
+            # Calculate improvement metrics
+            if before_state and after_state:
+                improvement_metrics = {}
+                
+                # Compare numerical metrics between states
+                for key in before_state:
+                    if key in after_state and isinstance(before_state[key], (int, float)) and isinstance(after_state[key], (int, float)):
+                        delta = after_state[key] - before_state[key]
+                        improvement_metrics[f"{key}_delta"] = delta
+                        improvement_metrics[f"{key}_improvement_percent"] = (delta / before_state[key] * 100) if before_state[key] != 0 else 0
+                
+                improvement_data["metrics"] = improvement_metrics
+            
+            # Log different types of improvements with specific handling
+            if improvement_type == "confidence_adjustment":
+                confidence_level = "increased" if confidence_delta > 0 else "decreased" if confidence_delta < 0 else "stable"
+                self.logger.info(f"Self-improvement: Confidence {confidence_level} by {abs(confidence_delta):.3f} for task '{task_id}'")
+                
+                if self.notebook:
+                    self.notebook.log("self_improvement_confidence", {
+                        **improvement_data,
+                        "confidence_direction": confidence_level,
+                        "confidence_magnitude": abs(confidence_delta),
+                        "confidence_category": "high" if abs(confidence_delta) > 0.5 else "medium" if abs(confidence_delta) > 0.2 else "low"
+                    })
+                    
+            elif improvement_type == "pattern_recognition":
+                pattern_summary = "; ".join(pattern_insights[:3]) if pattern_insights else "No specific patterns"
+                self.logger.info(f"Self-improvement: Pattern recognition enhanced for task '{task_id}'. Insights: {pattern_summary}")
+                
+                if self.notebook:
+                    self.notebook.log("self_improvement_patterns", {
+                        **improvement_data,
+                        "pattern_summary": pattern_summary,
+                        "insight_depth": len(pattern_insights) if pattern_insights else 0,
+                        "pattern_categories": self._categorize_patterns(pattern_insights) if pattern_insights else []
+                    })
+                    
+            elif improvement_type == "strategy_change":
+                self.logger.info(f"Self-improvement: Strategy adapted for task '{task_id}' based on learning analysis")
+                
+                if self.notebook:
+                    self.notebook.log("self_improvement_strategy", {
+                        **improvement_data,
+                        "strategy_evolution": True,
+                        "adaptation_reason": f"Learning from task {task_id} patterns"
+                    })
+                    
+            elif improvement_type == "behavior_optimization":
+                self.logger.info(f"Self-improvement: Behavior optimized for task '{task_id}' - enhanced decision making")
+                
+                if self.notebook:
+                    self.notebook.log("self_improvement_behavior", {
+                        **improvement_data,
+                        "optimization_type": "decision_making",
+                        "behavioral_enhancement": True
+                    })
+                    
+            else:
+                # Generic improvement tracking
+                self.logger.info(f"Self-improvement: {improvement_type} applied to task '{task_id}'")
+                
+                if self.notebook:
+                    self.notebook.log("self_improvement_generic", improvement_data)
+            
+            # Track cumulative improvement over time
+            if hasattr(self, '_improvement_history'):
+                self._improvement_history.append(improvement_data)
+                # Keep only last 100 improvements to manage memory
+                if len(self._improvement_history) > 100:
+                    self._improvement_history = self._improvement_history[-100:]
+            else:
+                self._improvement_history = [improvement_data]
+            
+            # Log aggregate improvement statistics periodically
+            if len(self._improvement_history) % 10 == 0:
+                self._log_improvement_statistics()
+                
+        except Exception as e:
+            self.logger.error(f"Error tracking self-improvement for task '{task_id}': {e}")
+            if self.notebook:
+                self.notebook.log("self_improvement_tracking_error", {
+                    "task_id": task_id,
+                    "improvement_type": improvement_type,
+                    "error": str(e),
+                    "traceback": traceback.format_exc()
+                })
 
-    def process_prompt(self, prompt: str, tool_manager: Optional[ToolManager] = None) -> Dict[str, Any]:
+    def _categorize_patterns(self, patterns: List[str]) -> List[str]:
+        """
+        Categorize discovered patterns into types for better tracking.
+        
+        :param patterns: List of pattern insights
+        :return: List of pattern categories
+        """
+        categories = []
+        if not patterns:
+            return categories
+            
+        for pattern in patterns:
+            pattern_lower = pattern.lower()
+            if any(keyword in pattern_lower for keyword in ['validation', 'test', 'check']):
+                categories.append('validation_patterns')
+            elif any(keyword in pattern_lower for keyword in ['timeout', 'delay', 'performance']):
+                categories.append('performance_patterns')
+            elif any(keyword in pattern_lower for keyword in ['error', 'failure', 'exception']):
+                categories.append('error_patterns')
+            elif any(keyword in pattern_lower for keyword in ['success', 'pass', 'complete']):
+                categories.append('success_patterns')
+            else:
+                categories.append('general_patterns')
+                
+        return list(set(categories))  # Remove duplicates
+
+    def _log_improvement_statistics(self) -> None:
+        """
+        Log aggregate improvement statistics for analysis.
+        """
+        if not hasattr(self, '_improvement_history') or not self._improvement_history:
+            return
+            
+        try:
+            total_improvements = len(self._improvement_history)
+            confidence_adjustments = sum(1 for imp in self._improvement_history if imp['improvement_type'] == 'confidence_adjustment')
+            pattern_recognitions = sum(1 for imp in self._improvement_history if imp['improvement_type'] == 'pattern_recognition')
+            strategy_changes = sum(1 for imp in self._improvement_history if imp['improvement_type'] == 'strategy_change')
+            
+            avg_confidence_delta = sum(abs(imp.get('confidence_delta', 0)) for imp in self._improvement_history) / total_improvements
+            total_patterns = sum(len(imp.get('pattern_insights', [])) for imp in self._improvement_history)
+            
+            stats = {
+                "total_improvements": total_improvements,
+                "confidence_adjustments": confidence_adjustments,
+                "pattern_recognitions": pattern_recognitions,
+                "strategy_changes": strategy_changes,
+                "average_confidence_delta": avg_confidence_delta,
+                "total_patterns_discovered": total_patterns,
+                "improvement_velocity": total_improvements / 10,  # improvements per 10 operations
+                "learning_efficiency": total_patterns / total_improvements if total_improvements > 0 else 0
+            }
+            
+            self.logger.info(f"Self-improvement statistics: {total_improvements} total improvements, {confidence_adjustments} confidence adjustments, {pattern_recognitions} pattern discoveries")
+            
+            if self.notebook:
+                self.notebook.log("self_improvement_aggregate_stats", stats)
+                
+        except Exception as e:
+            self.logger.error(f"Error logging improvement statistics: {e}")    def process_prompt(self, prompt: str, tool_manager: Optional[ToolManager] = None) -> Dict[str, Any]:
         """
         Main entry point for processing natural language prompts into tools.
         Integrates retry memory learning for intelligent self-improvement.
