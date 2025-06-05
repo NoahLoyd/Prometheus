@@ -940,8 +940,7 @@ class SelfCodingEngine:
         elif not tool_path and hasattr(self, 'sandbox_runner') and self.sandbox_runner:
             self.logger.info(f"Sandbox execution skipped for plan {plan.get('name', 'N/A')} as tool_path is not available.")
         # --- END SANDBOX INTEGRATION ---
-
-        # --- AGI EXTENSION: Enhanced Validator Audit Logging ---
+            # --- AGI EXTENSION: Enhanced Validator Audit Logging ---
         for validator_name in self.VALIDATORS:
             validator = self.validator_registry.get(validator_name)
             if validator:
@@ -1384,7 +1383,7 @@ class SelfCodingEngine:
             iteration += 1
             registered_this_round = False
             
-                        for validator_name in list(loaded_validators.keys()):
+            for validator_name in list(loaded_validators.keys()):
                 validator_info = loaded_validators[validator_name]
                 requires = validator_info['requires']
                 
@@ -1556,16 +1555,17 @@ class SelfCodingEngine:
                     })
                 
                 self.logger.warning(learning_feedback)
-                # Add after self.logger.warning(learning_feedback)
-self.track_self_improvement(
-    task_id=task_id,
-    improvement_type="confidence_adjustment", 
-    before_state={"failure_count": 0, "success_count": 0},
-    after_state={"failure_count": failure_count, "success_count": success_count},
-    confidence_delta=-0.3,  # Reduced confidence due to failures
-    pattern_insights=unique_reasons
-)            
-elif success_count > 0 and failure_count > 0:
+                # FIXED: Properly placed and indented track_self_improvement call
+                self.track_self_improvement(
+                    task_id=task_id,
+                    improvement_type="confidence_adjustment", 
+                    before_state={"failure_count": 0, "success_count": 0},
+                    after_state={"failure_count": failure_count, "success_count": success_count},
+                    confidence_delta=-0.3,  # Reduced confidence due to failures
+                    pattern_insights=unique_reasons
+                )
+                
+            elif success_count > 0 and failure_count > 0:
                 # Mixed results - analyze success patterns
                 success_reasons = [
                     entry.get('reason', 'Unknown reason') 
@@ -1587,15 +1587,16 @@ elif success_count > 0 and failure_count > 0:
                     })
                 
                 self.logger.info(learning_feedback)
-# Add after self.logger.info(learning_feedback)
-self.track_self_improvement(
-    task_id=task_id,
-    improvement_type="pattern_recognition",
-    before_state={"patterns_known": 0},
-    after_state={"patterns_identified": len(success_reasons)},
-    confidence_delta=0.1,  # Slight confidence boost from learning
-    pattern_insights=success_reasons
-)
+                # FIXED: Properly placed and indented track_self_improvement call
+                self.track_self_improvement(
+                    task_id=task_id,
+                    improvement_type="pattern_recognition",
+                    before_state={"patterns_known": 0},
+                    after_state={"patterns_identified": len(success_reasons)},
+                    confidence_delta=0.1,  # Slight confidence boost from learning
+                    pattern_insights=success_reasons
+                )
+                
             elif success_count > failure_count:
                 # Mostly successful - positive reinforcement
                 learning_feedback = f"Task '{task_id}' learning: High success rate ({success_count} successes vs {failure_count} failures). Positive patterns reinforced."
@@ -1611,15 +1612,17 @@ self.track_self_improvement(
                     })
                 
                 self.logger.info(learning_feedback)
-            # Add after self.logger.info(learning_feedback)
-self.track_self_improvement(
-    task_id=task_id,
-    improvement_type="confidence_adjustment",
-    before_state={"success_rate": 0.5},
-    after_state={"success_rate": success_count / (success_count + failure_count)},
-    confidence_delta=0.2,  # Increased confidence from success
-    pattern_insights=[f"High success rate pattern for {task_id}"]
-)        except Exception as e:
+                # FIXED: Properly placed and indented track_self_improvement call
+                self.track_self_improvement(
+                    task_id=task_id,
+                    improvement_type="confidence_adjustment",
+                    before_state={"success_rate": 0.5},
+                    after_state={"success_rate": success_count / (success_count + failure_count)},
+                    confidence_delta=0.2,  # Increased confidence from success
+                    pattern_insights=[f"High success rate pattern for {task_id}"]
+                )
+                
+        except Exception as e:
             self.logger.error(f"Error during retry memory learning for task '{task_id}': {e}")
             if self.notebook:
                 self.notebook.log("retry_memory_learning_error", {
@@ -1627,6 +1630,7 @@ self.track_self_improvement(
                     "error": str(e),
                     "traceback": traceback.format_exc()
                 })
+
     def track_self_improvement(self, task_id: str, improvement_type: str, 
                               before_state: Dict[str, Any], after_state: Dict[str, Any],
                               confidence_delta: float = 0.0, pattern_insights: Optional[List[str]] = None) -> None:
@@ -1805,7 +1809,9 @@ self.track_self_improvement(
                 self.notebook.log("self_improvement_aggregate_stats", stats)
                 
         except Exception as e:
-            self.logger.error(f"Error logging improvement statistics: {e}")    def process_prompt(self, prompt: str, tool_manager: Optional[ToolManager] = None) -> Dict[str, Any]:
+            self.logger.error(f"Error logging improvement statistics: {e}")
+
+    def process_prompt(self, prompt: str, tool_manager: Optional[ToolManager] = None) -> Dict[str, Any]:
         """
         Main entry point for processing natural language prompts into tools.
         Integrates retry memory learning for intelligent self-improvement.
