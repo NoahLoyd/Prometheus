@@ -39,6 +39,192 @@ class ModuleBuilderTool:
         """Initialize ModuleBuilderTool with optional notebook instance."""
         self.notebook = notebook or AddOnNotebook()
 
+    def generate_code(self, plan: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Generate Python tool code based on a structured plan without writing to disk.
+        
+        Args:
+            plan (Dict[str, Any]): Plan dictionary containing:
+                - name (str): Tool name
+                - description (str): Tool description
+                - tool_type (str): Type of tool (optional, defaults to "tool")
+                - functions (List[Dict]): List of function specifications, each containing:
+                    - name (str): Function name
+                    - description (str): Function description
+                    - args (List[Dict], optional): Function arguments with name, type, description
+                    - returns (Dict, optional): Return type and description
+        
+        Returns:
+            Dict[str, str]: Dictionary mapping file paths to generated code content
+        """
+        # Validate required plan fields
+        if not isinstance(plan, dict):
+            raise ValueError("Plan must be a dictionary")
+        
+        required_fields = ["name", "description", "functions"]
+        for field in required_fields:
+            if field not in plan:
+                raise ValueError(f"Plan missing required field: {field}")
+        
+        name = plan["name"]
+        description = plan["description"]
+        tool_type = plan.get("tool_type", "tool")
+        functions = plan["functions"]
+        
+        if not isinstance(functions, list):
+            raise ValueError("Functions must be a list")
+        
+        # Generate class name and file path
+        class_name = self._to_pascal_case(name) + "Tool"
+        file_name = self._to_snake_case(name) + "_tool.py"
+        file_path = f"tools/{file_name}"
+        
+        # Generate imports
+        imports = [
+            "from typing import Dict, Any, List, Optional, Union",
+            "from core.base_tool import BaseTool",
+        ]
+        
+        # Generate class docstring
+        class_docstring = f'"""{class_name}\n\n{description}\n\nType: {tool_type}\n"""'
+        
+        # Generate methods
+        methods = []
+        for func_spec in functions:
+            method_code = self._generate_method(func_spec)
+            methods.append(method_code)
+        
+        # Combine all parts
+        code_parts = [
+            "\n".join(imports),
+            "",
+            "",
+            f"class {class_name}(BaseTool):",
+            f"    {class_docstring}",
+            "",
+        ]
+        
+        # Add methods with proper indentation
+        for i, method in enumerate(methods):
+            # Add spacing between methods
+            if i > 0:
+                code_parts.append("")
+            
+            # Indent each line of the method
+            method_lines = method.split("\n")
+            for line in method_lines:
+                if line.strip():
+                    code_parts.append(f"    {line}")
+                else:
+                    code_parts.append("")
+        
+        # Join all parts
+        full_code = "\n".join(code_parts)
+        
+        # Apply type header
+        full_code = self._apply_type_header(file_path, full_code, tool_type)
+        
+        return {file_path: full_code}
+    
+    def _generate_method(self, func_spec: Dict[str, Any]) -> str:
+        """
+        Generate a single method from function specification.
+        
+        Args:
+            func_spec (Dict[str, Any]): Function specification containing name, description, args, returns
+        
+        Returns:
+            str: Generated method code
+        """
+        if not isinstance(func_spec, dict) or "name" not in func_spec:
+            raise ValueError("Function specification must be a dict with 'name' field")
+        
+        name = func_spec["name"]
+        description = func_spec.get("description", f"Execute {name} operation")
+        args = func_spec.get("args", [])
+        returns = func_spec.get("returns", {"type": "Dict[str, Any]", "description": "Operation result"})
+        
+        # Generate method signature
+        method_name = self._to_snake_case(name)
+        params = ["self"]
+        
+        # Process arguments
+        for arg in args:
+            arg_name = arg.get("name", "param")
+            arg_type = arg.get("type", "Any")
+            arg_default = arg.get("default", None)
+            
+            if arg_default is not None:
+                if isinstance(arg_default, str):
+                    params.append(f'{arg_name}: {arg_type} = "{arg_default}"')
+                else:
+                    params.append(f"{arg_name}: {arg_type} = {arg_default}")
+            else:
+                params.append(f"{arg_name}: {arg_type}")
+        
+        # Return type
+        return_type = returns.get("type", "Dict[str, Any]")
+        
+        signature = f"def {method_name}({', '.join(params)}) -> {return_type}:"
+        
+        # Generate docstring
+        docstring_parts = [f'"""{{description}}']
+        
+        if args:
+            docstring_parts.append("")
+            docstring_parts.append("Args:")
+            for arg in args:
+                arg_name = arg.get("name", "param")
+                arg_type = arg.get("type", "Any")
+                arg_desc = arg.get("description", "Parameter description")
+                docstring_parts.append(f"    {arg_name} ({arg_type}): {arg_desc}")
+        
+        if returns:
+            docstring_parts.append("")
+            docstring_parts.append("Returns:")
+            return_desc = returns.get("description", "Operation result")
+            docstring_parts.append(f"    {return_type}: {return_desc}")
+        
+        docstring_parts.append('"""')
+        docstring = "\n".join(docstring_parts).format(description=description)
+        
+        # Generate method body
+        body_lines = [
+            "try:",
+            "    # TODO: Implement method logic",
+            "    result = {",
+            "        'success': True,",
+            f"        'method': '{method_name}',",
+            "        'data': None",
+            "    }",
+            "    return result",
+            "except Exception as e:",
+            "    return {",
+            "        'success': False,",
+            f"        'method': '{method_name}',",
+            "        'error': str(e)",
+            "    }"
+        ]
+        
+        # Combine method parts
+        method_lines = [signature, docstring] + body_lines
+        return "\n".join(method_lines)
+    
+    def _to_pascal_case(self, name: str) -> str:
+        """
+        Convert string to PascalCase.
+        
+        Args:
+            name (str): Input string
+        
+        Returns:
+            str: PascalCase string
+        """
+        # First convert to snake_case, then to PascalCase
+        snake = self._to_snake_case(name)
+        words = snake.split('_')
+        return ''.join(word.capitalize() for word in words if word)
+    
     def write_module(self, plan: Dict[str, Any]) -> Dict[str, List[str]]:
         """
         Main entry: Writes modules and test files as specified in the build plan.
