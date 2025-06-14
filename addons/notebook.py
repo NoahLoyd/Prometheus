@@ -15,43 +15,25 @@ class AddOnNotebook:
         # Ensure the directory exists
         os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
 
-    def log(self, component: str, log_type: str, message: Union[str, Dict[str, Any]], metadata: Optional[Dict[str, Any]] = None):
+    def log(self, tag: str, message: str, metadata: Optional[Dict[str, Any]] = None):
         """
-        Log an entry with timestamp, component, and log type.
+        Log an entry with timestamp, tag, and message.
         
         Args:
-            component: The component generating the log (e.g., 'tool_manager', 'user_prompt')
-            log_type: The type of log event (e.g., 'INITIALIZATION', 'ERROR', 'SUCCESS')
-            message: The main log message (string) or content (dict)
-            metadata: Optional dictionary of additional metadata to merge into the log entry
-        
-        For backward compatibility, also supports the old 2-arg format:
-        - log(entry_type, content_dict)  # Original format
+            tag: A tag to categorize the log entry (e.g., 'tool_manager', 'user_prompt', 'ERROR')
+            message: The main log message as a string
+            metadata: Optional dictionary of additional metadata to include in the log entry
         """
-        # Handle backward compatibility for old 2-arg calls
-        if metadata is None and isinstance(message, dict) and log_type is None:
-            # This is likely the old format: log(entry_type, content_dict)
-            return self._log_legacy(component, message)
-        
-        # Build the base log entry with new format
+        # Build the base log entry
         log_entry = {
             "timestamp": datetime.utcnow().isoformat(),
-            "component": component,
-            "log_type": log_type
+            "tag": tag,
+            "message": message
         }
-        
-        # Handle message content
-        if isinstance(message, str):
-            log_entry["message"] = message
-        elif isinstance(message, dict):
-            log_entry["content"] = message
-        else:
-            # Convert other types to string for safety
-            log_entry["message"] = str(message)
         
         # Merge metadata if provided, avoiding overwrite of protected keys
         if metadata:
-            protected_keys = {"timestamp", "component", "log_type", "message", "content"}
+            protected_keys = {"timestamp", "tag", "message"}
             for key, value in metadata.items():
                 if key not in protected_keys:
                     log_entry[key] = value
@@ -75,7 +57,7 @@ class AddOnNotebook:
     def get_logs(self, entry_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Returns logs filtered by entry_type (or all if None).
-        Searches both 'source' (legacy) and 'component' (new) fields.
+        Searches both 'source' (legacy) and 'tag' (new) fields.
         """
         if not os.path.isfile(self.log_path):
             return []
@@ -84,7 +66,7 @@ class AddOnNotebook:
             for line in f:
                 try:
                     entry = json.loads(line)
-                    if not entry_type or entry.get("source") == entry_type or entry.get("component") == entry_type:
+                    if not entry_type or entry.get("source") == entry_type or entry.get("tag") == entry_type:
                         logs.append(entry)
                 except Exception:
                     continue
