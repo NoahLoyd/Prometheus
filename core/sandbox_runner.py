@@ -6,7 +6,7 @@ import sys
 import logging
 import resource
 import threading
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from core.utils.path_utils import safe_path_join
 from addons.notebook import AddOnNotebook
 
@@ -69,7 +69,8 @@ def _set_resource_limits(cpu_time_limit: int, memory_limit_mb: int) -> None:
         resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
     except Exception as e:
         logger.error(f"Failed to set resource limits: {e}")
-        raise
+        # Don't raise on platforms that don't support resource limits (like Windows)
+        pass
 
 
 def _run_with_limits(
@@ -104,13 +105,18 @@ def _run_with_limits(
 
     def target(proc_result: dict):
         try:
+            # Use preexec_fn only on Unix-like systems
+            preexec_fn = None
+            if hasattr(os, 'fork'):  # Unix-like systems
+                preexec_fn = lambda: _set_resource_limits(cpu_time_limit, memory_limit_mb)
+            
             proc = subprocess.Popen(
                 cmd,
                 cwd=cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 stdin=subprocess.DEVNULL,
-                preexec_fn=lambda: _set_resource_limits(cpu_time_limit, memory_limit_mb),
+                preexec_fn=preexec_fn,
                 env=env,
                 close_fds=True,
             )
@@ -362,6 +368,195 @@ def run_python_file_in_sandbox(
     return result
 
 
+class SandboxRunner:
+    """
+    Main class for running Python files safely in a sandboxed environment.
+    This class provides the interface expected by self_coding_engine.py.
+    """
+    
+    def __init__(self, notebook: Optional[AddOnNotebook] = None, 
+                 cpu_time_limit: int = 3, memory_limit_mb: int = 128):
+        """
+        Initialize the SandboxRunner.
+        
+        Args:
+            notebook: Optional AddOnNotebook instance for enhanced logging
+            cpu_time_limit: Default CPU time limit in seconds
+            memory_limit_mb: Default memory limit in MB
+        """
+        self.notebook = notebook
+        self.cpu_time_limit = cpu_time_limit
+        self.memory_limit_mb = memory_limit_mb
+        
+        logger.info(f"Initialized SandboxRunner with CPU limit={cpu_time_limit}s, memory limit={memory_limit_mb}MB")
+        
+        if self.notebook:
+            self.notebook.log("sandbox_runner", "RUNNER_INITIALIZED", "SandboxRunner initialized", metadata={
+                "cpu_time_limit": cpu_time_limit,
+                "memory_limit_mb": memory_limit_mb
+            })
+    
+    def run_file_safely(self, filepath: str, timeout: int = 5) -> Tuple[bool, str]:
+        """
+        Run a Python file safely in a sandbox environment.
+        
+        Args:
+            filepath: Path to the Python file to execute
+            timeout: Maximum execution time in seconds
+            
+        Returns:
+            Tuple of (success: bool, result: str)
+            - success: True if execution completed successfully (exit code 0)
+            - result: Combined stdout and stderr output, or error message
+        """
+        if not os.path.exists(filepath):
+            error_msg = f"File not found: {filepath}"
+            logger.error(error_msg)
+            if self.notebook:
+                self.notebook.log("sandbox_runner", "FILE_NOT_FOUND", error_msg, metadata={
+                    "filepath": filepath
+                })
+            return False, error_msg
+        
+        if not filepath.endswith('.py'):
+            error_msg = f"File is not a Python file: {filepath}"
+            logger.error(error_msg)
+            if self.notebook:
+                self.notebook.log("sandbox_runner", "INVALID_FILE_TYPE", error_msg, metadata={
+                    "filepath": filepath
+                })
+            return False, error_msg
+        
+        try:
+            result = run_python_file_in_sandbox(
+                python_file_path=filepath,
+                cpu_time_limit=self.cpu_time_limit,
+                memory_limit_mb=self.memory_limit_mb,
+                timeout=timeout,
+                notebook=self.notebook
+            )
+            
+            # Combine stdout and stderr for the result string
+            output_parts = []
+            if result["stdout"]:
+                output_parts.append(f"STDOUT:\n{result['stdout']}")
+            if result["stderr"]:
+                output_parts.append(f"STDERR:\n{result['stderr']}")
+            
+            if not output_parts:
+                output_parts.append("No output captured")
+            
+            result_str = "\n\n".join(output_parts)
+            
+            # Add exit code information if not successful
+            if not result["success"]:
+                result_str += f"\n\nExit code: {result['exit_code']}"
+            
+            logger.info(f"Sandbox execution completed for {filepath}: success={result['success']}")
+            
+            if self.notebook:
+                self.notebook.log("sandbox_runner", "RUN_FILE_SAFELY_COMPLETE", f"run_file_safely completed for {filepath}", metadata={
+                    "filepath": filepath,
+                    "success": result["success"],
+                    "exit_code": result["exit_code"],
+                    "timeout": timeout,
+                    "result_length": len(result_str)
+                })
+            
+            return result["success"], result_str
+            
+        except Exception as e:
+            error_msg = f"Sandbox runner error: {str(e)}"
+            logger.exception(f"Error in run_file_safely for {filepath}: {e}")
+            
+            if self.notebook:
+                self.notebook.log("sandbox_runner", "RUN_FILE_SAFELY_ERROR", f"Error in run_file_safely: {e}", metadata={
+                    "filepath": filepath,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "timeout": timeout
+                })
+            
+            return False, error_msg
+    
+    def run_code_safely(self, code: str, timeout: int = 5, filename: str = "temp_code.py") -> Tuple[bool, str]:
+        """
+        Run Python code safely by writing it to a temporary file and executing it.
+        
+        Args:
+            code: Python code to execute
+            timeout: Maximum execution time in seconds
+            filename: Name to use for the temporary file
+            
+        Returns:
+            Tuple of (success: bool, result: str)
+        """
+        if not code.strip():
+            error_msg = "No code provided to execute"
+            logger.error(error_msg)
+            if self.notebook:
+                self.notebook.log("sandbox_runner", "NO_CODE_PROVIDED", error_msg, metadata={
+                    "filename": filename
+                })
+            return False, error_msg
+        
+        temp_file = None
+        try:
+            # Create a temporary file with the code
+            temp_fd, temp_file = tempfile.mkstemp(suffix=".py", prefix="promethyn_code_")
+            with os.fdopen(temp_fd, 'w', encoding='utf-8') as f:
+                f.write(code)
+            
+            logger.debug(f"Created temporary code file: {temp_file}")
+            
+            if self.notebook:
+                self.notebook.log("sandbox_runner", "TEMP_CODE_FILE_CREATED", f"Created temporary code file: {temp_file}", metadata={
+                    "temp_file": temp_file,
+                    "code_length": len(code),
+                    "filename": filename
+                })
+            
+            # Run the temporary file
+            return self.run_file_safely(temp_file, timeout)
+            
+        except Exception as e:
+            error_msg = f"Error creating temporary code file: {str(e)}"
+            logger.exception(f"Error in run_code_safely: {e}")
+            
+            if self.notebook:
+                self.notebook.log("sandbox_runner", "RUN_CODE_SAFELY_ERROR", f"Error in run_code_safely: {e}", metadata={
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "code_length": len(code),
+                    "filename": filename,
+                    "temp_file": temp_file
+                })
+            
+            return False, error_msg
+            
+        finally:
+            # Clean up the temporary file
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.unlink(temp_file)
+                    logger.debug(f"Cleaned up temporary code file: {temp_file}")
+                    
+                    if self.notebook:
+                        self.notebook.log("sandbox_runner", "TEMP_CODE_FILE_CLEANUP", f"Cleaned up temporary code file: {temp_file}", metadata={
+                            "temp_file": temp_file
+                        })
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to clean up temporary code file {temp_file}: {e}")
+                    
+                    if self.notebook:
+                        self.notebook.log("sandbox_runner", "TEMP_CODE_FILE_CLEANUP_ERROR", f"Failed to clean up temporary code file: {e}", metadata={
+                            "temp_file": temp_file,
+                            "error": str(e),
+                            "error_type": type(e).__name__
+                        })
+
+
 # Example usage (for development, not production):
 if __name__ == "__main__":
     import argparse
@@ -381,8 +576,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Create notebook instance for CLI usage
-    notebook = AddOnNotebook()
+    try:
+        notebook = AddOnNotebook()
+    except Exception:
+        notebook = None
     
+    # Test both the function and the class
+    print("Testing run_python_file_in_sandbox function:")
     res = run_python_file_in_sandbox(
         args.python_file, 
         cpu_time_limit=args.cpu, 
@@ -390,5 +590,12 @@ if __name__ == "__main__":
         timeout=args.timeout,
         notebook=notebook
     )
-    print("Result:")
+    print("Function result:")
     print(res)
+    
+    print("\nTesting SandboxRunner class:")
+    runner = SandboxRunner(notebook=notebook, cpu_time_limit=args.cpu, memory_limit_mb=args.mem)
+    success, result = runner.run_file_safely(args.python_file, timeout=args.timeout)
+    print("Class result:")
+    print(f"Success: {success}")
+    print(f"Result: {result}")
