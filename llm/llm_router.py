@@ -27,10 +27,9 @@ from .validation import (
 )
 from .vram_checker import VRAMChecker, VRAMStats, ModelVRAMRequirement
 from .model_registry import LocalModelRegistry, ModelMetadata
-from .base_llm import BaseLLM
+from .base_llm import BaseLLM, ModelExecutionContext
 from core.logging import Logging
 
-# [Previous imports and ModelPriority enum remain the same...]
 
 class LLMRouter:
     """
@@ -72,6 +71,10 @@ class LLMRouter:
             # Initialize logging first for error tracking
             self.logger = logging.getLogger(__name__)
             self.raise_on_error = raise_on_error
+            
+            # Initialize cache and threading
+            self.cache = {}
+            self.cache_lock = threading.Lock()
             
             # Load and validate configuration
             self.config = self._load_and_validate_config(config, config_path)
@@ -159,6 +162,51 @@ class LLMRouter:
             if self.raise_on_error:
                 raise ConfigurationError(error_msg) from e
             return self._create_fallback_model_registry()
+
+    def _init_model_selector(self, feedback_memory):
+        """Initialize model selector with fallback"""
+        try:
+            # Create a simple model selector that returns ModelExecutionContext objects
+            class SimpleModelSelector:
+                def __init__(self, config, model_registry):
+                    self.config = config
+                    self.model_registry = model_registry
+                    
+                def select_models(self, task_type=None, min_models=1, max_models=3):
+                    # Return list of ModelExecutionContext objects
+                    models = []
+                    for model_name in self.config.get("models", ["simulated"]):
+                        context = ModelExecutionContext(
+                            name=model_name,
+                            source="local",
+                            task_type=task_type,
+                            priority=5,
+                            is_simulation=model_name == "simulated"
+                        )
+                        models.append(context)
+                    return models[:max_models]
+            
+            return SimpleModelSelector(self.config, self.model_registry)
+        except Exception as e:
+            self.logger.error(f"Failed to initialize model selector: {e}")
+            return self._create_fallback_model_selector()
+
+    def _init_components(
+        self,
+        evaluation_strategy,
+        fallback_strategy,
+        voting_strategy,
+        profiler,
+        feedback_memory,
+        confidence_scorer
+    ):
+        """Initialize remaining components with error handling"""
+        self.evaluation_strategy = evaluation_strategy
+        self.fallback_strategy = fallback_strategy
+        self.voting_strategy = voting_strategy
+        self.profiler = profiler
+        self.feedback_memory = feedback_memory
+        self.confidence_scorer = confidence_scorer
 
     def _verify_cuda_availability(self):
         """Verify CUDA availability if required"""
@@ -269,6 +317,20 @@ class LLMRouter:
             self.logger.warning(f"Cache check failed: {e}")
             return None
 
+    def _hash_query(self, goal: str, context: Optional[str], task_type: Optional[str]) -> str:
+        """Generate hash for caching"""
+        query_str = f"{goal}|{context or ''}|{task_type or ''}"
+        return hashlib.md5(query_str.encode()).hexdigest()
+
+    def _update_cache(self, goal: str, context: Optional[str], task_type: Optional[str], result: List[Tuple[str, str]]):
+        """Update cache with result"""
+        try:
+            query_hash = self._hash_query(goal, context, task_type)
+            with self.cache_lock:
+                self.cache[query_hash] = result
+        except Exception as e:
+            self.logger.warning(f"Cache update failed: {e}")
+
     def _select_models_with_fallback(
         self,
         task_type: Optional[str]
@@ -291,6 +353,18 @@ class LLMRouter:
             if self.raise_on_error:
                 raise
             return self._get_fallback_models()
+
+    def _get_fallback_models(self) -> List[ModelExecutionContext]:
+        """Get fallback models when selection fails"""
+        return [
+            ModelExecutionContext(
+                name="simulated",
+                source="local",
+                task_type=None,
+                priority=1,
+                is_simulation=True
+            )
+        ]
 
     def _execute_models_safely(
         self,
@@ -379,10 +453,14 @@ class LLMRouter:
             
         except Exception as e:
             execution_time = (datetime.now() - start_time).total_seconds()
-            model_context.update_metrics(execution_time, False)
+            model_context.update_metrics(execution_time, False, str(e))
             raise ExecutionError(
                 f"Model {model_context.model_name} execution failed: {e}"
             ) from e
+
+    def _get_model_params(self, model_context: ModelExecutionContext) -> Dict[str, Any]:
+        """Get model-specific parameters"""
+        return model_context.metadata.get("model_params", {}) if model_context.metadata else {}
 
     @contextmanager
     def _monitor_resources_safely(self, model_context: ModelExecutionContext):
@@ -427,6 +505,16 @@ class LLMRouter:
             self.logger.error(f"Failed to create success result: {e}")
             return self._create_error_result(model_context, e)
 
+    def _calculate_confidence(self, result: Any) -> float:
+        """Calculate confidence score for result"""
+        try:
+            if self.confidence_scorer:
+                return self.confidence_scorer.score(result)
+            return 0.8  # Default confidence
+        except Exception as e:
+            self.logger.warning(f"Confidence calculation failed: {e}")
+            return 0.5
+
     def _create_error_result(
         self,
         model_context: ModelExecutionContext,
@@ -453,6 +541,34 @@ class LLMRouter:
             "model_context": model_context
         }
 
+    def _process_results_safely(self, results: List[Dict[str, Any]], goal: str, task_type: Optional[str]) -> List[Tuple[str, str]]:
+        """Process results safely with fallback"""
+        try:
+            # Filter successful results
+            successful_results = [r for r in results if r.get("success", False)]
+            
+            if not successful_results:
+                # No successful results, return error plan
+                return [("error", "All models failed to execute")]
+            
+            # Use voting strategy if available
+            if self.voting_strategy and len(successful_results) > 1:
+                return self.voting_strategy.merge_results(successful_results, goal, task_type)
+            
+            # Return best result
+            best_result = max(successful_results, key=lambda x: x.get("confidence", 0))
+            result_content = best_result.get("result", "No result available")
+            
+            # Convert result to plan format
+            if isinstance(result_content, list) and result_content and isinstance(result_content[0], tuple):
+                return result_content
+            else:
+                return [("plan", str(result_content))]
+                
+        except Exception as e:
+            self.logger.error(f"Result processing failed: {e}")
+            return [("error", f"Result processing failed: {e}")]
+
     def _generate_fallback_response(
         self,
         goal: str,
@@ -473,6 +589,10 @@ class LLMRouter:
             self.logger.error(f"Fallback response generation failed: {e}")
             return [("error", "System unavailable")]
 
+    def _simulate_llm(self, model_name: str, goal: str, context: Optional[str]) -> str:
+        """Simulate LLM response for testing/fallback"""
+        return f"Simulated response from {model_name} for goal: {goal}"
+
     def _init_fallback_mode(self):
         """Initialize system in fallback mode"""
         self.config = {
@@ -480,6 +600,9 @@ class LLMRouter:
             "use_simulation": True,
             "logging": {"level": "WARNING"}
         }
+        self.cache = {}
+        self.cache_lock = threading.Lock()
+        self.model_selector = self._create_fallback_model_selector()
         self.logger.warning("System initialized in fallback mode")
 
     def _create_fallback_vram_checker(self) -> VRAMChecker:
@@ -499,6 +622,21 @@ class LLMRouter:
             def get_all_models(self):
                 return {"simulated": ModelMetadata("simulated", {}, datetime.now())}
         return FallbackModelRegistry()
+
+    def _create_fallback_model_selector(self):
+        """Create fallback model selector"""
+        class FallbackModelSelector:
+            def select_models(self, **kwargs):
+                return [
+                    ModelExecutionContext(
+                        name="simulated",
+                        source="local",
+                        task_type=None,
+                        priority=1,
+                        is_simulation=True
+                    )
+                ]
+        return FallbackModelSelector()
 
     def _get_validated_model(
         self,
@@ -533,5 +671,3 @@ class LLMRouter:
             "simulation": True,
             "model_context": model_context
         }
-
-    # [Previous utility methods remain unchanged...]
