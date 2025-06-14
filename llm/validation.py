@@ -10,9 +10,9 @@ error messages for debugging and system reliability.
 from typing import Dict, List, Any, Optional, Literal, Union
 from pathlib import Path
 import json
+import warnings
 
-from pydantic import BaseModel, Field, validator, ValidationError as PydanticValidationError
-from pydantic.error_wrappers import ErrorWrapper
+from pydantic import BaseModel, Field, field_validator, ValidationError as PydanticValidationError, ConfigDict
 
 from .exceptions import ValidationError, ConfigurationError
 
@@ -24,6 +24,19 @@ class ModelConfig(BaseModel):
     Validates essential model parameters including name, type, endpoint,
     and token limits with appropriate constraints and defaults.
     """
+    
+    model_config = ConfigDict(
+        extra='forbid',  # Disallow extra fields
+        validate_assignment=True,
+        json_schema_extra={
+            "example": {
+                "name": "gpt-4",
+                "type": "remote",
+                "endpoint": "https://api.openai.com/v1/chat/completions",
+                "max_tokens": 4096
+            }
+        }
+    )
     
     name: str = Field(
         ...,
@@ -49,7 +62,8 @@ class ModelConfig(BaseModel):
         description="Maximum number of tokens the model can process"
     )
     
-    @validator('name')
+    @field_validator('name')
+    @classmethod
     def validate_name(cls, v):
         """Validate model name format and characters."""
         if not v.replace('-', '').replace('_', '').replace('.', '').isalnum():
@@ -59,10 +73,11 @@ class ModelConfig(BaseModel):
             )
         return v.strip()
     
-    @validator('endpoint')
-    def validate_endpoint(cls, v, values):
+    @field_validator('endpoint')
+    @classmethod
+    def validate_endpoint(cls, v, info):
         """Validate endpoint requirements based on model type."""
-        model_type = values.get('type')
+        model_type = info.data.get('type') if info.data else None
         
         if model_type == 'remote' and not v:
             raise ValueError("Remote models must have an endpoint specified")
@@ -75,7 +90,8 @@ class ModelConfig(BaseModel):
         
         return v
     
-    @validator('max_tokens')
+    @field_validator('max_tokens')
+    @classmethod
     def validate_max_tokens(cls, v):
         """Validate token limits are reasonable."""
         if v <= 0:
@@ -83,26 +99,12 @@ class ModelConfig(BaseModel):
         
         # Warn about unusually high token counts
         if v > 32768:
-            import warnings
             warnings.warn(
                 f"max_tokens ({v}) is unusually high and may cause "
                 "performance issues or API errors"
             )
         
         return v
-    
-    class Config:
-        """Pydantic configuration for ModelConfig."""
-        extra = "forbid"  # Disallow extra fields
-        validate_assignment = True
-        schema_extra = {
-            "example": {
-                "name": "gpt-4",
-                "type": "remote",
-                "endpoint": "https://api.openai.com/v1/chat/completions",
-                "max_tokens": 4096
-            }
-        }
 
 
 class RouterConfig(BaseModel):
@@ -113,6 +115,29 @@ class RouterConfig(BaseModel):
     with comprehensive validation of strategy types and model lists.
     """
     
+    model_config = ConfigDict(
+        extra='forbid',
+        validate_assignment=True,
+        json_schema_extra={
+            "example": {
+                "strategy": "priority",
+                "models": [
+                    {
+                        "name": "local-llama",
+                        "type": "local",
+                        "max_tokens": 2048
+                    },
+                    {
+                        "name": "gpt-4",
+                        "type": "remote",
+                        "endpoint": "https://api.openai.com/v1/chat/completions",
+                        "max_tokens": 4096
+                    }
+                ]
+            }
+        }
+    )
+    
     strategy: str = Field(
         ...,
         min_length=1,
@@ -122,12 +147,13 @@ class RouterConfig(BaseModel):
     
     models: List[ModelConfig] = Field(
         ...,
-        min_items=1,
-        max_items=20,
+        min_length=1,
+        max_length=20,
         description="List of model configurations for routing"
     )
     
-    @validator('strategy')
+    @field_validator('strategy')
+    @classmethod
     def validate_strategy(cls, v):
         """Validate strategy name format."""
         allowed_strategies = {
@@ -144,7 +170,8 @@ class RouterConfig(BaseModel):
         
         return strategy_name
     
-    @validator('models')
+    @field_validator('models')
+    @classmethod
     def validate_models(cls, v):
         """Validate model list constraints."""
         if not v:
@@ -163,36 +190,12 @@ class RouterConfig(BaseModel):
         remote_models = [m for m in v if m.type == 'remote']
         
         if len(remote_models) > 10:
-            import warnings
             warnings.warn(
                 f"Large number of remote models ({len(remote_models)}) "
                 "may impact performance"
             )
         
         return v
-    
-    class Config:
-        """Pydantic configuration for RouterConfig."""
-        extra = "forbid"
-        validate_assignment = True
-        schema_extra = {
-            "example": {
-                "strategy": "priority",
-                "models": [
-                    {
-                        "name": "local-llama",
-                        "type": "local",
-                        "max_tokens": 2048
-                    },
-                    {
-                        "name": "gpt-4",
-                        "type": "remote",
-                        "endpoint": "https://api.openai.com/v1/chat/completions",
-                        "max_tokens": 4096
-                    }
-                ]
-            }
-        }
 
 
 def validate_model_config(model_config: Dict[str, Any]) -> ModelConfig:
@@ -494,7 +497,7 @@ def _validate_routing_section(routing: Any, errors: List[str]) -> Dict[str, Any]
     for route_name, route_config in routing.items():
         try:
             validated_route = validate_routing_config(route_config)
-            validated_routing[route_name] = validated_route.dict()
+            validated_routing[route_name] = validated_route.model_dump()
         except ValueError as e:
             errors.append(f"Routing '{route_name}' validation failed: {str(e)}")
     
