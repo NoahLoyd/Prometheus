@@ -1,0 +1,26 @@
+{
+  "use_simulation": true,
+  "models": {
+    "local-mistral": {
+      "name": "local-mistral",
+      "provider": "huggingface",
+      "path": "TheBloke/Mistral-7B-Instruct-v0.2-GGUF",
+      "task_support": ["tool", "reasoning"],
+      "max_tokens": 2048
+    },
+    "local-llama": {
+      "name": "local-llama",
+      "provider": "huggingface", 
+      "path": "TheBloke/Llama-2-7B-Chat-GGUF",
+      "task_support": ["tool", "reasoning"],
+      "max_tokens": 2048
+    },
+    "local-codellama": {
+      "name": "local-codellama",
+      "provider": "huggingface",
+      "path": "TheBloke/CodeLlama-7B-Instruct-GGUF", 
+      "task_support": ["tool", "reasoning"],
+      "max_tokens": 2048
+    }
+  }
+}
