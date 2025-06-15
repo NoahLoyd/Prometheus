@@ -19,7 +19,7 @@ from tools.test_tool_runner import TestToolRunner  # <--- NEW IMPORT
 from core.validators.extended_validators import register_validators
 from core.sandbox_runner import SandboxRunner # <--- ADDED FOR SANDBOX INTEGRATION
 from core.utils.path_utils import safe_path_join, import_validator
-from memory.retry_memory import get_retry_memory  # <--- NEW: Retry memory import
+from core.utils.validator_importer import import_validator_by_name  # ADD THIS LINEfrom memory.retry_memory import get_retry_memory  # <--- NEW: Retry memory import
 
 # --- BEGIN: Updated Validator Import System ---
 def import_validator_fallback(name):
@@ -49,20 +49,20 @@ validator_simple_names = ["code_quality_assessor", "security_scanner", "behavior
 for validator_simple_name in validator_simple_names:
     try:
         # Use the backward compatibility function that handles simple names
-        validator_module = import_validator_by_name(validator_simple_name)        if validator_module is not None:
-            if validator_name == "code_quality_assessor":
+        validator_module = import_validator_by_name(validator_simple_name)
+        if validator_module is not None:
+            if validator_simple_name == "code_quality_assessor":
                 CodeQualityAssessor = getattr(validator_module, "CodeQualityAssessor", None)
-            elif validator_name == "security_scanner":
+            elif validator_simple_name == "security_scanner":
                 SecurityScanner = getattr(validator_module, "SecurityScanner", None)
-            elif validator_name == "behavioral_simulator":
+            elif validator_simple_name == "behavioral_simulator":
                 BehavioralSimulator = getattr(validator_module, "BehavioralSimulator", None)
-            elif validator_name == "security_validator":
+            elif validator_simple_name == "security_validator":
                 validate_security = getattr(validator_module, "validate_security", None)
         else:
-            logger.warning(f"Could not import validator: {validator_name}")
+            logger.warning(f"Could not import validator: {validator_simple_name}")
     except Exception as e:
-        logger.warning(f"Exception while importing validator '{validator_name}': {e}")
-# --- End: Dynamic Validator Imports ---
+        logger.warning(f"Exception while importing validator '{validator_simple_name}': {e}")# --- End: Dynamic Validator Imports ---
 
 # --- BEGIN: Missing validator classes for compatibility ---
 class MathEvaluator:
