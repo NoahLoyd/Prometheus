@@ -43,12 +43,13 @@ BehavioralSimulator = None
 validate_security = None
 
 # List of validators to attempt dynamic import
-validator_names = ["code_quality_assessor", "security_scanner", "behavioral_simulator", "security_validator"]
+# List of validators to attempt dynamic import - FIXED: Use backward compatibility function
+validator_simple_names = ["code_quality_assessor", "security_scanner", "behavioral_simulator", "security_validator"]
 
-for validator_name in validator_names:
+for validator_simple_name in validator_simple_names:
     try:
-        validator_module = import_validator(validator_name)
-        if validator_module is not None:
+        # Use the backward compatibility function that handles simple names
+        validator_module = import_validator_by_name(validator_simple_name)        if validator_module is not None:
             if validator_name == "code_quality_assessor":
                 CodeQualityAssessor = getattr(validator_module, "CodeQualityAssessor", None)
             elif validator_name == "security_scanner":
