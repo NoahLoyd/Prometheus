@@ -19,9 +19,8 @@ from tools.test_tool_runner import TestToolRunner  # <--- NEW IMPORT
 from core.validators.extended_validators import register_validators
 from core.sandbox_runner import SandboxRunner # <--- ADDED FOR SANDBOX INTEGRATION
 from core.utils.path_utils import safe_path_join, import_validator
-from core.utils.validator_importer import import_validator_by_name  # ADD THIS LINEfrom memory.retry_memory import get_retry_memory  # <--- NEW: Retry memory import
-
-# --- BEGIN: Updated Validator Import System ---
+from core.utils.validator_importer import import_validator_by_name  # ADD THIS LINE
+from memory.retry_memory import get_retry_memory  # <--- NEW: Retry memory import# --- BEGIN: Updated Validator Import System ---
 def import_validator_fallback(name):
     """
     Fallback validator import function using the new import_validator utility.
@@ -62,9 +61,8 @@ for validator_simple_name in validator_simple_names:
         else:
             logger.warning(f"Could not import validator: {validator_simple_name}")
     except Exception as e:
-        logger.warning(f"Exception while importing validator '{validator_simple_name}': {e}")# --- End: Dynamic Validator Imports ---
-
-# --- BEGIN: Missing validator classes for compatibility ---
+        logger.warning(f"Exception while importing validator '{validator_simple_name}': {e}")
+# --- End: Dynamic Validator Imports ---# --- BEGIN: Missing validator classes for compatibility ---
 class MathEvaluator:
     """Placeholder MathEvaluator validator for compatibility."""
     def __call__(self, plan, tool_code, test_code):
